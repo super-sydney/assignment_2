@@ -81,6 +81,15 @@ public:
         } catch (ShaderLoadingException e) {
             std::cerr << e.what() << std::endl;
         }
+
+        // Initialize simple material params (these will be uploaded as uniforms)
+        m_kd = glm::vec3(0.5f);
+        m_ks = glm::vec3(0.5f);
+        m_shininess = 3.0f;
+        m_transparency = 1.0f;
+
+        // Initialize a default light
+        m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f, 1.0f, 1.0f)});
     }
 
     void update()
@@ -122,8 +131,67 @@ public:
 
             // Use ImGui for easy input/output of ints, floats, strings, etc...
             ImGui::Begin("Window");
-            ImGui::InputInt("This is an integer input", &dummyInteger); // Use ImGui::DragInt or ImGui::DragFloat for larger range of numbers.
-            ImGui::Text("Value is: %i", dummyInteger); // Use C printf formatting rules (%i is a signed integer)
+            // Material parameters
+            ImGui::Text("Material parameters");
+            ImGui::SliderFloat("Shininess", &m_shininess, 0.0f, 80.0f);
+            ImGui::ColorEdit3("Kd", &m_kd[0]);
+            ImGui::ColorEdit3("Ks", &m_ks[0]);
+            ImGui::SliderFloat("Ambient ka", &m_ka, 0.0f, 1.0f);
+            ImGui::Separator();
+
+            // Lights
+            ImGui::Text("Lights");
+            ImGui::Text("Active Light: %zu/%zu", m_selectedLight + 1, m_lights.size() > 0 ? m_lights.size() : 1);
+
+            // Build listbox strings
+            std::vector<std::string> itemStrings;
+            for (size_t i = 0; i < m_lights.size(); ++i)
+            {
+                std::string active = (i == m_selectedLight) ? " [ACTIVE]" : "";
+                itemStrings.push_back("Light " + std::to_string(i) + active);
+            }
+            std::vector<const char *> itemCStrings;
+            for (const auto &s : itemStrings)
+                itemCStrings.push_back(s.c_str());
+
+            int tempSelected = static_cast<int>(m_selectedLight);
+            if (!itemCStrings.empty())
+            {
+                if (ImGui::ListBox("Lights", &tempSelected, itemCStrings.data(), (int)itemCStrings.size(), 4))
+                {
+                    m_selectedLight = static_cast<size_t>(tempSelected);
+                }
+            }
+
+            if (ImGui::Button("Reset Lights"))
+            {
+                m_lights.clear();
+                m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f)});
+                m_selectedLight = 0;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Light"))
+            {
+                // Place new light at camera position
+                m_lights.push_back({m_camera.getPosition(), glm::vec3(1.0f, 1.0f, 1.0f)});
+                m_selectedLight = m_lights.size() - 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Remove Light") && !m_lights.empty())
+            {
+                m_lights.erase(m_lights.begin() + m_selectedLight);
+                if (m_selectedLight >= m_lights.size() && !m_lights.empty())
+                    m_selectedLight = m_lights.size() - 1;
+            }
+
+            if (!m_lights.empty() && m_selectedLight < m_lights.size())
+            {
+                ImGui::Separator();
+                ImGui::Text("Edit Current Light:");
+                ImGui::ColorEdit3("Light Color", &m_lights[m_selectedLight].color[0]);
+            }
+
+            ImGui::Separator();
             ImGui::Checkbox("Use material if no texture", &m_useMaterial);
             ImGui::End();
 
@@ -156,6 +224,29 @@ public:
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
+                // Upload camera and material uniforms
+                glUniform3fv(m_defaultShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+
+                // Update material UBO for this mesh (std140 block 'Material')
+                GPUMaterial mat;
+                mat.kd = m_kd;
+                mat.ks = m_ks;
+                mat.shininess = m_shininess;
+                mat.transparency = m_transparency;
+                // Update the mesh's material UBO
+                mesh.updateMaterialBuffer(mat);
+
+                // Active light (place at camera position if requested by add action)
+                glm::vec3 lightPos = m_lights.empty() ? glm::vec3(2.0f, 4.0f, 2.0f) : m_lights[m_selectedLight].position;
+                glm::vec3 lightCol = m_lights.empty() ? glm::vec3(1.0f) : m_lights[m_selectedLight].color;
+                glUniform3fv(m_defaultShader.getUniformLocation("lightPosition"), 1, glm::value_ptr(lightPos));
+                // If shader supports a light color uniform, upload it (optional)
+                int locColor = m_defaultShader.getUniformLocation("lightColor");
+                if (locColor >= 0)
+                    glUniform3fv(locColor, 1, glm::value_ptr(lightCol));
+                int locKa = m_defaultShader.getUniformLocation("ka");
+                if (locKa >= 0)
+                    glUniform1f(locKa, m_ka);
                 mesh.draw(m_defaultShader);
             }
 
@@ -183,7 +274,7 @@ public:
     // If the mouse is moved this function will be called with the x, y screen-coordinates of the mouse
     void onMouseMove(const glm::dvec2& cursorPos)
     {
-        std::cout << "Mouse at position: " << cursorPos.x << " " << cursorPos.y << std::endl;
+        // std::cout << "Mouse at position: " << cursorPos.x << " " << cursorPos.y << std::endl;
     }
 
     // If one of the mouse buttons is pressed this function will be called
@@ -212,6 +303,23 @@ private:
     std::vector<GPUMesh> m_meshes;
     Texture m_texture;
     bool m_useMaterial { true };
+
+    // Simple material parameters exposed to ImGui
+    glm::vec3 m_kd;
+    glm::vec3 m_ks;
+    float m_shininess;
+    float m_transparency;
+    float m_ka{0.0f};
+
+    // Simple light structure for UI
+    struct LightSimple
+    {
+        glm::vec3 position;
+        glm::vec3 color;
+    };
+
+    std::vector<LightSimple> m_lights;
+    size_t m_selectedLight{0};
 
     // Projection and view matrices for you to fill in and use
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);

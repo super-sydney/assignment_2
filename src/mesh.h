@@ -17,6 +17,7 @@ struct MeshLoadingException : public std::runtime_error {
 
 // Alignment directives are to comply with std140 alignment requirements (https://www.khronos.org/opengl/wiki/Interface_Block_(GLSL)#Memory_layout)
 struct GPUMaterial {
+    GPUMaterial() = default;
     GPUMaterial(const Material& material);
 
     alignas(16) glm::vec3 kd{ 1.0f };
@@ -45,6 +46,9 @@ public:
 
     // Bind VAO and call glDrawElements.
     void draw(const Shader& drawingShader);
+
+    // Update the GPU material buffer with new values
+    void updateMaterialBuffer(const GPUMaterial &gpuMaterial);
 
 private:
     void moveInto(GPUMesh&&);

@@ -1,5 +1,4 @@
 #include <framework/camera.h>
-#include <iostream>
 
 // Construct with defaults similar to common OpenGL examples.
 Camera::Camera(glm::vec3 position, glm::vec3 up, float yaw, float pitch)
@@ -19,7 +18,6 @@ Camera::Camera(glm::vec3 position, glm::vec3 up, float yaw, float pitch)
 // Return view matrix from current camera parameters.
 glm::mat4 Camera::getViewMatrix() const
 {
-    std::cout << "Camera Front:" << m_front.x << ", " << m_front.y << ", " << m_front.z << std::endl;
     return glm::lookAt(m_position, m_position + m_front, m_up);
 }
 
