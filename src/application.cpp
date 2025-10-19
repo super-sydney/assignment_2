@@ -18,6 +18,7 @@ DISABLE_WARNINGS_POP()
 #include <framework/shader.h>
 #include <framework/window.h>
 #include <framework/camera.h>
+#include <framework/file_picker.h>
 #include <functional>
 #include <iostream>
 #include <vector>
@@ -25,9 +26,10 @@ DISABLE_WARNINGS_POP()
 class Application {
 public:
     Application()
-        : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
-        , m_texture(RESOURCE_ROOT "resources/checkerboard.png")
+        : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41), m_texture(nullptr)
     {
+        // Create default texture here so we can change it later
+        m_texture = std::make_unique<Texture>(RESOURCE_ROOT "resources/checkerboard.png");
         // Default camera to point at origin
         const glm::vec3 camPos = glm::vec3(-1.0f, 1.0f, -1.0f);
         const glm::vec3 target = glm::vec3(0.0f);
@@ -192,6 +194,44 @@ public:
             }
 
             ImGui::Separator();
+            ImGui::Checkbox("Use Texture", &m_useTexture);
+            ImGui::SameLine();
+            if (ImGui::Button("Choose Texture..."))
+            {
+                if (auto path = pickOpenFile("png,jpg"))
+                {
+                    try
+                    {
+                        m_texture = std::make_unique<Texture>(path->string());
+                        m_useTexture = true;
+                    }
+                    catch (...)
+                    {
+                        std::cerr << "Failed to load normal map" << std::endl;
+                    }
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Checkbox("Use Normal Map", &m_useNormalMap);
+            ImGui::SameLine();
+            if (ImGui::Button("Choose Normal Map..."))
+            {
+                if (auto path = pickOpenFile("png,jpg"))
+                {
+                    try
+                    {
+                        m_normalMap = std::make_unique<Texture>(path->string());
+                        m_useNormalMap = true;
+                    }
+                    catch (...)
+                    {
+                        std::cerr << "Failed to load normal map" << std::endl;
+                    }
+                }
+            }
+
+            ImGui::Separator();
             ImGui::Checkbox("Use material if no texture", &m_useMaterial);
             ImGui::End();
 
@@ -216,12 +256,28 @@ public:
                 //glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
                 if (mesh.hasTextureCoords()) {
-                    m_texture.bind(GL_TEXTURE0);
-                    glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
-                    glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
-                    glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), GL_FALSE);
-                } else {
+                    // If user wants to use textures, bind and tell shader to sample; otherwise treat as no texcoords for shading
+                    if (m_useTexture)
+                    {
+                        if (m_texture)
+                            m_texture->bind(GL_TEXTURE0);
+                        glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
+                        glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
+                        glUniform1i(m_defaultShader.getUniformLocation("useTexture"), GL_TRUE);
+                        glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), GL_FALSE);
+                    }
+                    else
+                    {
+                        // Mesh has texcoords, but user disabled texture usage: tell shader it has texcoords=false
+                        glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
+                        glUniform1i(m_defaultShader.getUniformLocation("useTexture"), GL_FALSE);
+                        glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
+                    }
+                }
+                else
+                {
                     glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
+                    glUniform1i(m_defaultShader.getUniformLocation("useTexture"), GL_FALSE);
                     glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
                 // Upload camera and material uniforms
@@ -247,6 +303,18 @@ public:
                 int locKa = m_defaultShader.getUniformLocation("ka");
                 if (locKa >= 0)
                     glUniform1f(locKa, m_ka);
+
+                int locHasNM = m_defaultShader.getUniformLocation("hasNormalMap");
+                if (locHasNM >= 0)
+                    glUniform1i(locHasNM, (m_useNormalMap && m_normalMap) ? GL_TRUE : GL_FALSE);
+
+                if (m_useNormalMap && m_normalMap)
+                {
+                    m_normalMap->bind(GL_TEXTURE1);
+                    int locNM = m_defaultShader.getUniformLocation("normalMap");
+                    if (locNM >= 0)
+                        glUniform1i(locNM, 1);
+                }
                 mesh.draw(m_defaultShader);
             }
 
@@ -301,7 +369,7 @@ private:
     Shader m_shadowShader;
 
     std::vector<GPUMesh> m_meshes;
-    Texture m_texture;
+    std::unique_ptr<Texture> m_texture;
     bool m_useMaterial { true };
 
     // Simple material parameters exposed to ImGui
@@ -320,6 +388,10 @@ private:
 
     std::vector<LightSimple> m_lights;
     size_t m_selectedLight{0};
+    // Normal mapping
+    std::unique_ptr<Texture> m_normalMap;
+    bool m_useNormalMap{false};
+    bool m_useTexture{true};
 
     // Projection and view matrices for you to fill in and use
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);

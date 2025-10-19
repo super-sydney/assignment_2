@@ -5,6 +5,7 @@
 DISABLE_WARNINGS_PUSH()
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 DISABLE_WARNINGS_POP()
 #include <filesystem>
 #include <optional>
@@ -15,6 +16,7 @@ struct Vertex {
 	glm::vec3 position;
 	glm::vec3 normal;
 	glm::vec2 texCoord; // Texture coordinate
+	glm::vec4 tangent;  // tangent.xyz, w = bitangent sign
 
 	[[nodiscard]] constexpr bool operator==(const Vertex&) const noexcept = default;
 };

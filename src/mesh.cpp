@@ -22,7 +22,19 @@ GPUMesh::GPUMesh(const Mesh& cpuMesh)
     glBufferData(GL_UNIFORM_BUFFER, sizeof(GPUMaterial), &gpuMaterial, GL_STATIC_READ);
 
     // Figure out if this mesh has texture coordinates
+    // Either the material has a texture, or any vertex has non-zero texcoords
     m_hasTextureCoords = static_cast<bool>(cpuMesh.material.kdTexture);
+    if (!m_hasTextureCoords)
+    {
+        for (const auto &v : cpuMesh.vertices)
+        {
+            if (v.texCoord != glm::vec2(0.0f))
+            {
+                m_hasTextureCoords = true;
+                break;
+            }
+        }
+    }
 
     // Create VAO and bind it so subsequent creations of VBO and IBO are bound to this VAO
     glGenVertexArrays(1, &m_vao);
@@ -42,14 +54,18 @@ GPUMesh::GPUMesh(const Mesh& cpuMesh)
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
     glEnableVertexAttribArray(2);
+    // Tangent (location = 3)
+    glEnableVertexAttribArray(3);
     // We tell OpenGL what each vertex looks like and how they are mapped to the shader (location = ...).
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, position));
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texCoord));
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, tangent));
     // Reuse all attributes for each instance
     glVertexAttribDivisor(0, 0);
     glVertexAttribDivisor(1, 0);
     glVertexAttribDivisor(2, 0);
+    glVertexAttribDivisor(3, 0);
 
     // Each triangle has 3 vertices.
     m_numIndices = static_cast<GLsizei>(3 * cpuMesh.triangles.size());

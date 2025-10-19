@@ -147,6 +147,58 @@ std::vector<Mesh> loadMesh(const std::filesystem::path& file, const LoadMeshSett
     if (settings.normalizeVertexPositions)
         centerAndScaleToUnitMesh(out);
 
+    // Compute per-vertex tangents for each mesh (if texcoords are present)
+    // Based on https://learnopengl.com/Advanced-Lighting/Normal-Mapping
+    for (auto& mesh : out) {
+        // Initialize tangents
+        for (auto& v : mesh.vertices)
+            v.tangent = glm::vec4(0.0f);
+
+        // Accumulate per-triangle tangents
+        for (const auto& tri : mesh.triangles) {
+            const Vertex& v0 = mesh.vertices[tri.x];
+            const Vertex& v1 = mesh.vertices[tri.y];
+            const Vertex& v2 = mesh.vertices[tri.z];
+
+            glm::vec3 p0 = v0.position;
+            glm::vec3 p1 = v1.position;
+            glm::vec3 p2 = v2.position;
+
+            glm::vec2 uv0 = v0.texCoord;
+            glm::vec2 uv1 = v1.texCoord;
+            glm::vec2 uv2 = v2.texCoord;
+
+            glm::vec3 edge1 = p1 - p0;
+            glm::vec3 edge2 = p2 - p0;
+            glm::vec2 deltaUV1 = uv1 - uv0;
+            glm::vec2 deltaUV2 = uv2 - uv0;
+
+            float f = deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y;
+            float r = (fabs(f) < 1e-9f) ? 0.0f : 1.0f / f;
+
+            glm::vec3 tangent = r * (edge1 * deltaUV2.y - edge2 * deltaUV1.y);
+
+            mesh.vertices[tri.x].tangent += glm::vec4(tangent, 0.0f);
+            mesh.vertices[tri.y].tangent += glm::vec4(tangent, 0.0f);
+            mesh.vertices[tri.z].tangent += glm::vec4(tangent, 0.0f);
+        }
+
+        // Orthonormalize per-vertex tangents and compute handedness
+        for (auto& v : mesh.vertices) {
+            glm::vec3 n = v.normal;
+            glm::vec3 t = glm::vec3(v.tangent);
+            if (glm::length(t) < 1e-12f) {
+                // fallback tangent
+                t = glm::normalize(glm::cross(n, glm::vec3(0.0f, 0.0f, 1.0f)));
+            } else {
+                t = glm::normalize(t - n * glm::dot(n, t));
+            }
+            glm::vec3 b = glm::cross(n, t);
+            float w = (glm::dot(b, glm::vec3(v.tangent)) < 0.0f) ? -1.0f : 1.0f;
+            v.tangent = glm::vec4(t, w);
+        }
+    }
+
     return out;
 }
 
