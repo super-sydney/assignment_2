@@ -20,6 +20,7 @@ else()
 
 	add_library(CGFramework STATIC
 		"src/file_picker.cpp"
+		"src/camera.cpp"
 		"src/trackball.cpp"
 		"src/mesh.cpp"
 		"src/image.cpp"

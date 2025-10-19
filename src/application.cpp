@@ -17,6 +17,7 @@ DISABLE_WARNINGS_PUSH()
 DISABLE_WARNINGS_POP()
 #include <framework/shader.h>
 #include <framework/window.h>
+#include <framework/camera.h>
 #include <functional>
 #include <iostream>
 #include <vector>
@@ -27,6 +28,14 @@ public:
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41)
         , m_texture(RESOURCE_ROOT "resources/checkerboard.png")
     {
+        // Default camera to point at origin
+        const glm::vec3 camPos = glm::vec3(-1.0f, 1.0f, -1.0f);
+        const glm::vec3 target = glm::vec3(0.0f);
+        const glm::vec3 dir = glm::normalize(target - camPos);
+
+        const float pitch = glm::degrees(glm::asin(dir.y));
+        const float yaw = glm::degrees(glm::atan(dir.z, dir.x));
+        m_camera = Camera(camPos, glm::vec3(0.0f, 1.0f, 0.0f), yaw, pitch);
         m_window.registerKeyCallback([this](int key, int scancode, int action, int mods) {
             if (action == GLFW_PRESS)
                 onKeyPressed(key, mods);
@@ -40,6 +49,16 @@ public:
             else if (action == GLFW_RELEASE)
                 onMouseReleased(button, mods);
         });
+
+        // Toggle mouse capture by clicking left mouse button
+        m_window.registerMouseButtonCallback([this](int button, int action, int mods)
+                                             {
+            if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+                m_mouseCaptured = !m_mouseCaptured;
+                m_window.setMouseCapture(m_mouseCaptured);
+                // reset lastMouse to current to avoid jump
+                m_lastMousePos = m_window.getCursorPos();
+            } });
 
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
 
@@ -67,10 +86,39 @@ public:
     void update()
     {
         int dummyInteger = 0; // Initialized to 0
+        double lastTime = glfwGetTime();
         while (!m_window.shouldClose()) {
             // This is your game loop
             // Put your real-time logic and rendering in here
             m_window.updateInput();
+
+            // Time step
+            double currentTime = glfwGetTime();
+            float deltaTime = static_cast<float>(currentTime - lastTime);
+            lastTime = currentTime;
+
+            // Handle continuous key presses (WASD)
+            if (m_window.isKeyPressed(GLFW_KEY_W))
+                m_camera.processKeyboard(CameraMovement::Forward, deltaTime);
+            if (m_window.isKeyPressed(GLFW_KEY_S))
+                m_camera.processKeyboard(CameraMovement::Backward, deltaTime);
+            if (m_window.isKeyPressed(GLFW_KEY_A))
+                m_camera.processKeyboard(CameraMovement::Left, deltaTime);
+            if (m_window.isKeyPressed(GLFW_KEY_D))
+                m_camera.processKeyboard(CameraMovement::Right, deltaTime);
+            if (m_window.isKeyPressed(GLFW_KEY_SPACE))
+                m_camera.processKeyboard(CameraMovement::Up, deltaTime);
+            if (m_window.isKeyPressed(GLFW_KEY_LEFT_CONTROL) || m_window.isKeyPressed(GLFW_KEY_LEFT_ALT))
+                m_camera.processKeyboard(CameraMovement::Down, deltaTime);
+
+            // Mouse look when captured
+            if (m_mouseCaptured)
+            {
+                glm::vec2 cursor = m_window.getCursorPos();
+                glm::vec2 delta = cursor - m_lastMousePos;
+                m_lastMousePos = cursor;
+                m_camera.processMouseMovement(delta.x, delta.y);
+            }
 
             // Use ImGui for easy input/output of ints, floats, strings, etc...
             ImGui::Begin("Window");
@@ -86,6 +134,8 @@ public:
             // ...
             glEnable(GL_DEPTH_TEST);
 
+            // Update view matrix from camera
+            m_viewMatrix = m_camera.getViewMatrix();
             const glm::mat4 mvpMatrix = m_projectionMatrix * m_viewMatrix * m_modelMatrix;
             // Normals should be transformed differently than positions (ignoring translations + dealing with scaling):
             // https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
@@ -167,6 +217,9 @@ private:
     glm::mat4 m_projectionMatrix = glm::perspective(glm::radians(80.0f), 1.0f, 0.1f, 30.0f);
     glm::mat4 m_viewMatrix = glm::lookAt(glm::vec3(-1, 1, -1), glm::vec3(0), glm::vec3(0, 1, 0));
     glm::mat4 m_modelMatrix { 1.0f };
+    Camera m_camera;
+    bool m_mouseCaptured{false};
+    glm::vec2 m_lastMousePos{0.0f};
 };
 
 int main()
