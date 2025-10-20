@@ -29,7 +29,25 @@ public:
         : m_window("Final Project", glm::ivec2(1024, 1024), OpenGLVersion::GL41), m_texture(nullptr)
     {
         // Create default texture here so we can change it later
-        m_texture = std::make_unique<Texture>(RESOURCE_ROOT "resources/checkerboard.png");
+        // Load default ground PBR maps from resources/ground
+        try
+        {
+            m_texture = std::make_unique<Texture>(RESOURCE_ROOT "resources/ground/ground.jpg");
+            m_normalMap = std::make_unique<Texture>(RESOURCE_ROOT "resources/ground/ground_normals.png");
+            m_roughnessMap = std::make_unique<Texture>(RESOURCE_ROOT "resources/ground/ground_roughness.jpg");
+            m_aoMap = std::make_unique<Texture>(RESOURCE_ROOT "resources/ground/ground_ao.jpg");
+            m_heightMap = std::make_unique<Texture>(RESOURCE_ROOT "resources/ground/ground_height.png");
+            m_useTexture = true;
+            m_useNormalMap = false;
+            m_useRoughnessMap = false;
+            m_useAOMap = false;
+            m_useHeightMap = false;
+        }
+        catch (...)
+        {
+            // Fall back to checkerboard if any default asset fails to load
+            m_texture = std::make_unique<Texture>(RESOURCE_ROOT "resources/checkerboard.png");
+        }
         // Default camera to point at origin
         const glm::vec3 camPos = glm::vec3(-1.0f, 1.0f, -1.0f);
         const glm::vec3 target = glm::vec3(0.0f);
@@ -82,6 +100,20 @@ public:
             // ....
         } catch (ShaderLoadingException e) {
             std::cerr << e.what() << std::endl;
+        }
+
+        // Blinn-phong shader for comparison
+        try
+        {
+            ShaderBuilder basicBuilder;
+            basicBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
+            basicBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/blinnphong_frag.glsl");
+            m_basicShader = basicBuilder.build();
+        }
+        catch (ShaderLoadingException &e)
+        {
+            // It's fine if this shader fails to load; we'll just keep using the default shader
+            std::cerr << "Warning: failed to load basic shader: " << e.what() << std::endl;
         }
 
         // Initialize simple material params (these will be uploaded as uniforms)
@@ -139,6 +171,8 @@ public:
             ImGui::ColorEdit3("Kd", &m_kd[0]);
             ImGui::ColorEdit3("Ks", &m_ks[0]);
             ImGui::SliderFloat("Ambient ka", &m_ka, 0.0f, 1.0f);
+            ImGui::SliderFloat("Metallic", &m_metallic, 0.0f, 1.0f);
+            ImGui::SliderFloat("Roughness", &m_roughness, 0.04f, 1.0f);
             ImGui::Separator();
 
             // Lights
@@ -196,6 +230,8 @@ public:
             ImGui::Separator();
             ImGui::Checkbox("Use Texture", &m_useTexture);
             ImGui::SameLine();
+            ImGui::Checkbox("Use PBR shader", &m_usePBR);
+            ImGui::SameLine();
             if (ImGui::Button("Choose Texture..."))
             {
                 if (auto path = pickOpenFile("png,jpg"))
@@ -232,6 +268,68 @@ public:
             }
 
             ImGui::Separator();
+            ImGui::Checkbox("Use Roughness Map", &m_useRoughnessMap);
+            ImGui::SameLine();
+            if (ImGui::Button("Choose Roughness Map..."))
+            {
+                if (auto path = pickOpenFile("png,jpg"))
+                {
+                    try
+                    {
+                        m_roughnessMap = std::make_unique<Texture>(path->string());
+                        m_useRoughnessMap = true;
+                    }
+                    catch (...)
+                    {
+                        std::cerr << "Failed to load roughness map" << std::endl;
+                    }
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Checkbox("Use AO Map", &m_useAOMap);
+            ImGui::SameLine();
+            if (ImGui::Button("Choose AO Map..."))
+            {
+                if (auto path = pickOpenFile("png,jpg"))
+                {
+                    try
+                    {
+                        m_aoMap = std::make_unique<Texture>(path->string());
+                        m_useAOMap = true;
+                    }
+                    catch (...)
+                    {
+                        std::cerr << "Failed to load AO map" << std::endl;
+                    }
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Checkbox("Use Height Map", &m_useHeightMap);
+            ImGui::SameLine();
+            if (ImGui::Button("Choose Height Map..."))
+            {
+                if (auto path = pickOpenFile("png,jpg"))
+                {
+                    try
+                    {
+                        m_heightMap = std::make_unique<Texture>(path->string());
+                        m_useHeightMap = true;
+                    }
+                    catch (...)
+                    {
+                        std::cerr << "Failed to load height map" << std::endl;
+                    }
+                }
+            }
+
+            if (m_useHeightMap)
+            {
+                ImGui::SliderFloat("Height scale", &m_heightScale, 0.0f, 0.2f);
+            }
+
+            ImGui::Separator();
             ImGui::Checkbox("Use material if no texture", &m_useMaterial);
             ImGui::End();
 
@@ -250,8 +348,10 @@ public:
             const glm::mat3 normalModelMatrix = glm::inverseTranspose(glm::mat3(m_modelMatrix));
 
             for (GPUMesh& mesh : m_meshes) {
-                m_defaultShader.bind();
-                glUniformMatrix4fv(m_defaultShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpMatrix));
+                // Choose active shader based on UI toggle
+                Shader &activeShader = m_usePBR ? m_defaultShader : m_basicShader;
+                activeShader.bind();
+                glUniformMatrix4fv(activeShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpMatrix));
                 //Uncomment this line when you use the modelMatrix (or fragmentPosition)
                 //glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
@@ -261,27 +361,27 @@ public:
                     {
                         if (m_texture)
                             m_texture->bind(GL_TEXTURE0);
-                        glUniform1i(m_defaultShader.getUniformLocation("colorMap"), 0);
-                        glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_TRUE);
-                        glUniform1i(m_defaultShader.getUniformLocation("useTexture"), GL_TRUE);
-                        glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), GL_FALSE);
+                        glUniform1i(activeShader.getUniformLocation("colorMap"), 0);
+                        glUniform1i(activeShader.getUniformLocation("hasTexCoords"), GL_TRUE);
+                        glUniform1i(activeShader.getUniformLocation("useTexture"), GL_TRUE);
+                        glUniform1i(activeShader.getUniformLocation("useMaterial"), GL_FALSE);
                     }
                     else
                     {
                         // Mesh has texcoords, but user disabled texture usage: tell shader it has texcoords=false
-                        glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
-                        glUniform1i(m_defaultShader.getUniformLocation("useTexture"), GL_FALSE);
-                        glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
+                        glUniform1i(activeShader.getUniformLocation("hasTexCoords"), GL_FALSE);
+                        glUniform1i(activeShader.getUniformLocation("useTexture"), GL_FALSE);
+                        glUniform1i(activeShader.getUniformLocation("useMaterial"), m_useMaterial);
                     }
                 }
                 else
                 {
-                    glUniform1i(m_defaultShader.getUniformLocation("hasTexCoords"), GL_FALSE);
-                    glUniform1i(m_defaultShader.getUniformLocation("useTexture"), GL_FALSE);
-                    glUniform1i(m_defaultShader.getUniformLocation("useMaterial"), m_useMaterial);
+                    glUniform1i(activeShader.getUniformLocation("hasTexCoords"), GL_FALSE);
+                    glUniform1i(activeShader.getUniformLocation("useTexture"), GL_FALSE);
+                    glUniform1i(activeShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
                 // Upload camera and material uniforms
-                glUniform3fv(m_defaultShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+                glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
 
                 // Update material UBO for this mesh (std140 block 'Material')
                 GPUMaterial mat;
@@ -295,27 +395,74 @@ public:
                 // Active light (place at camera position if requested by add action)
                 glm::vec3 lightPos = m_lights.empty() ? glm::vec3(2.0f, 4.0f, 2.0f) : m_lights[m_selectedLight].position;
                 glm::vec3 lightCol = m_lights.empty() ? glm::vec3(1.0f) : m_lights[m_selectedLight].color;
-                glUniform3fv(m_defaultShader.getUniformLocation("lightPosition"), 1, glm::value_ptr(lightPos));
+                glUniform3fv(activeShader.getUniformLocation("lightPosition"), 1, glm::value_ptr(lightPos));
                 // If shader supports a light color uniform, upload it (optional)
-                int locColor = m_defaultShader.getUniformLocation("lightColor");
+                int locColor = activeShader.getUniformLocation("lightColor");
                 if (locColor >= 0)
                     glUniform3fv(locColor, 1, glm::value_ptr(lightCol));
-                int locKa = m_defaultShader.getUniformLocation("ka");
+                int locKa = activeShader.getUniformLocation("ka");
                 if (locKa >= 0)
                     glUniform1f(locKa, m_ka);
 
-                int locHasNM = m_defaultShader.getUniformLocation("hasNormalMap");
+                int locHasNM = activeShader.getUniformLocation("hasNormalMap");
                 if (locHasNM >= 0)
                     glUniform1i(locHasNM, (m_useNormalMap && m_normalMap) ? GL_TRUE : GL_FALSE);
 
                 if (m_useNormalMap && m_normalMap)
                 {
                     m_normalMap->bind(GL_TEXTURE1);
-                    int locNM = m_defaultShader.getUniformLocation("normalMap");
+                    int locNM = activeShader.getUniformLocation("normalMap");
                     if (locNM >= 0)
                         glUniform1i(locNM, 1);
                 }
-                mesh.draw(m_defaultShader);
+                // Roughness map in texture 2
+                int locHasRough = activeShader.getUniformLocation("hasRoughnessMap");
+                if (locHasRough >= 0)
+                    glUniform1i(locHasRough, (m_useRoughnessMap && m_roughnessMap) ? GL_TRUE : GL_FALSE);
+                if (m_useRoughnessMap && m_roughnessMap)
+                {
+                    m_roughnessMap->bind(GL_TEXTURE2);
+                    int locR = activeShader.getUniformLocation("roughnessMap");
+                    if (locR >= 0)
+                        glUniform1i(locR, 2);
+                }
+
+                // AO map in texture 3
+                int locHasAO = activeShader.getUniformLocation("hasAOMap");
+                if (locHasAO >= 0)
+                    glUniform1i(locHasAO, (m_useAOMap && m_aoMap) ? GL_TRUE : GL_FALSE);
+                if (m_useAOMap && m_aoMap)
+                {
+                    m_aoMap->bind(GL_TEXTURE3);
+                    int locAO = activeShader.getUniformLocation("aoMap");
+                    if (locAO >= 0)
+                        glUniform1i(locAO, 3);
+                }
+
+                // Height map in texture 4
+                int locHasHeight = activeShader.getUniformLocation("hasHeightMap");
+                if (locHasHeight >= 0)
+                    glUniform1i(locHasHeight, (m_useHeightMap && m_heightMap) ? GL_TRUE : GL_FALSE);
+                if (m_useHeightMap && m_heightMap)
+                {
+                    m_heightMap->bind(GL_TEXTURE4);
+                    int locH = activeShader.getUniformLocation("heightMap");
+                    if (locH >= 0)
+                        glUniform1i(locH, 4);
+                }
+
+                int locHeightScale = activeShader.getUniformLocation("heightScale");
+                if (locHeightScale >= 0)
+                    glUniform1f(locHeightScale, m_heightScale);
+
+                // Upload PBR parameters
+                int locMetallic = activeShader.getUniformLocation("metallic");
+                if (locMetallic >= 0)
+                    glUniform1f(locMetallic, m_metallic);
+                int locRoughVal = activeShader.getUniformLocation("roughnessValue");
+                if (locRoughVal >= 0)
+                    glUniform1f(locRoughVal, m_roughness);
+                mesh.draw(activeShader);
             }
 
             // Processes input and swaps the window buffer
@@ -367,6 +514,9 @@ private:
     // Shader for default rendering and for depth rendering
     Shader m_defaultShader;
     Shader m_shadowShader;
+    // Basic blinn phong shader to compare against PBR
+    Shader m_basicShader;
+    bool m_usePBR{true};
 
     std::vector<GPUMesh> m_meshes;
     std::unique_ptr<Texture> m_texture;
@@ -378,6 +528,8 @@ private:
     float m_shininess;
     float m_transparency;
     float m_ka{0.0f};
+    float m_metallic{0.0f};
+    float m_roughness{0.5f};
 
     // Simple light structure for UI
     struct LightSimple
@@ -391,6 +543,13 @@ private:
     // Normal mapping
     std::unique_ptr<Texture> m_normalMap;
     bool m_useNormalMap{false};
+    std::unique_ptr<Texture> m_roughnessMap;
+    bool m_useRoughnessMap{false};
+    std::unique_ptr<Texture> m_aoMap;
+    bool m_useAOMap{false};
+    std::unique_ptr<Texture> m_heightMap;
+    bool m_useHeightMap{false};
+    float m_heightScale{0.03f};
     bool m_useTexture{true};
 
     // Projection and view matrices for you to fill in and use
