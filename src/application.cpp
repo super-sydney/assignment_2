@@ -22,6 +22,8 @@ DISABLE_WARNINGS_POP()
 #include <functional>
 #include <iostream>
 #include <vector>
+#include <stb/stb_image.h>
+
 
 class Application {
 public:
@@ -82,6 +84,16 @@ public:
 
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
 
+        std::vector<std::string> faces = {
+            std::string(RESOURCE_ROOT) + "resources/cubemap/px.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/nx.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/py.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/ny.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/pz.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/nz.png",
+        };
+        m_cubemapTexture = loadCubemap(faces);
+
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -93,6 +105,11 @@ public:
             shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "Shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
 
+            m_skyboxShader = ShaderBuilder()
+                .addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/skybox_vert.glsl")
+                .addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/skybox_frag.glsl")
+                .build();
+
             // Any new shaders can be added below in similar fashion.
             // ==> Don't forget to reconfigure CMake when you do!
             //     Visual Studio: PROJECT => Generate Cache for ComputerGraphics
@@ -101,6 +118,10 @@ public:
         } catch (ShaderLoadingException e) {
             std::cerr << e.what() << std::endl;
         }
+
+		// setup skybox VAO/VBO
+        setupSkybox();
+
 
         // Blinn-phong shader for comparison
         try
@@ -125,6 +146,130 @@ public:
         // Initialize a default light
         m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f, 1.0f, 1.0f)});
     }
+
+    GLuint loadCubemap(const std::vector<std::string>& faces)
+    {
+        if (faces.size() != 6) {
+            std::cerr << "loadCubemap: expected 6 faces, got " << faces.size() << std::endl;
+            return 0;
+        }
+
+        // Important: ensure stb doesn't flip cubemap faces unexpectedly
+        stbi_set_flip_vertically_on_load(false);
+
+        GLuint textureID = 0;
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+
+        // In case row alignment is not 4 (defensive)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+        for (unsigned int i = 0; i < faces.size(); ++i) {
+            int width = 0, height = 0, nrChannels = 0;
+            // Force 0 to get number of channels; we will handle both 3 and 4 channels
+            stbi_uc* data = stbi_load(faces[i].c_str(), &width, &height, &nrChannels, 0);
+
+            if (!data) {
+                std::cerr << "Cubemap failed to load at path: " << faces[i] << "\n";
+                std::cerr << " stbi failure: " << stbi_failure_reason() << std::endl;
+                // leave the face empty (still valid) or bail out:
+                // return 0;
+                continue;
+            }
+
+            if (width != height) {
+                std::cerr << "Warning: cubemap face not square: " << faces[i] << " (" << width << "x" << height << ")\n";
+            }
+
+            GLenum format = GL_RGB;
+            if (nrChannels == 1) format = GL_RED;
+            else if (nrChannels == 3) format = GL_RGB;
+            else if (nrChannels == 4) format = GL_RGBA;
+            else {
+                std::cerr << "Unexpected channel count (" << nrChannels << ") for " << faces[i] << std::endl;
+            }
+
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+                0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+
+            stbi_image_free(data);
+
+            std::cout << "Loaded cubemap face " << i << ": " << faces[i]
+                << " (" << width << "x" << height << ", ch=" << nrChannels << ")\n";
+        }
+
+        // Filters + wrapping
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+        // Generate mipmaps if you set MIN_FILTER to a mipmap mode
+        glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+
+        // restore default alignment
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+        return textureID;
+    }
+
+    void setupSkybox()
+    {
+        float skyboxVertices[] = {
+            -1.0f,  1.0f, -1.0f,
+            -1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+             1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+
+            -1.0f, -1.0f,  1.0f,
+            -1.0f, -1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f,  1.0f,
+            -1.0f, -1.0f,  1.0f,
+
+             1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+
+            -1.0f, -1.0f,  1.0f,
+            -1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f, -1.0f,  1.0f,
+            -1.0f, -1.0f,  1.0f,
+
+            -1.0f,  1.0f, -1.0f,
+             1.0f,  1.0f, -1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+            -1.0f,  1.0f,  1.0f,
+            -1.0f,  1.0f, -1.0f,
+
+            -1.0f, -1.0f, -1.0f,
+            -1.0f, -1.0f,  1.0f,
+             1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+            -1.0f, -1.0f,  1.0f,
+             1.0f, -1.0f,  1.0f
+        };
+
+        glGenVertexArrays(1, &m_skyboxVAO);
+        glGenBuffers(1, &m_skyboxVBO);
+        glBindVertexArray(m_skyboxVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_skyboxVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+    }
+
 
     void update()
     {
@@ -330,6 +475,9 @@ public:
             }
 
             ImGui::Separator();
+            ImGui::Checkbox("Use Environment Map", &m_useEnvironmentMapping);
+
+            ImGui::Separator();
             ImGui::Checkbox("Use material if no texture", &m_useMaterial);
             ImGui::End();
 
@@ -339,6 +487,25 @@ public:
 
             // ...
             glEnable(GL_DEPTH_TEST);
+
+
+            // Draw Skybox
+            glDepthFunc(GL_LEQUAL); // change depth function so skybox passes when depth is 1.0
+            m_skyboxShader.bind();
+
+            // Remove translation from view matrix
+            glm::mat4 viewNoTranslate = glm::mat4(glm::mat3(m_camera.getViewMatrix()));
+            glUniformMatrix4fv(m_skyboxShader.getUniformLocation("view"), 1, GL_FALSE, glm::value_ptr(viewNoTranslate));
+            glUniformMatrix4fv(m_skyboxShader.getUniformLocation("projection"), 1, GL_FALSE, glm::value_ptr(m_projectionMatrix));
+
+            glBindVertexArray(m_skyboxVAO);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glBindVertexArray(0);
+            glDepthFunc(GL_LESS); // reset to default
+
+
 
             // Update view matrix from camera
             m_viewMatrix = m_camera.getViewMatrix();
@@ -382,6 +549,7 @@ public:
                 }
                 // Upload camera and material uniforms
                 glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+
 
                 // Update material UBO for this mesh (std140 block 'Material')
                 GPUMaterial mat;
@@ -462,6 +630,15 @@ public:
                 int locRoughVal = activeShader.getUniformLocation("roughnessValue");
                 if (locRoughVal >= 0)
                     glUniform1f(locRoughVal, m_roughness);
+
+				// Environment mapping on texture 5
+                glUniform1i(activeShader.getUniformLocation("useEnvironmentMap"), m_useEnvironmentMapping ? GL_TRUE : GL_FALSE);
+                if (m_useEnvironmentMapping) {
+                    glActiveTexture(GL_TEXTURE5);
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+                    glUniform1i(activeShader.getUniformLocation("environmentMap"), 5);
+                }
+
                 mesh.draw(activeShader);
             }
 
@@ -516,7 +693,15 @@ private:
     Shader m_shadowShader;
     // Basic blinn phong shader to compare against PBR
     Shader m_basicShader;
+    Shader m_skyboxShader;
+
     bool m_usePBR{true};
+
+	bool m_useEnvironmentMapping { false };
+    GLuint m_cubemapTexture;
+
+    GLuint m_skyboxVAO = 0;
+    GLuint m_skyboxVBO = 0;
 
     std::vector<GPUMesh> m_meshes;
     std::unique_ptr<Texture> m_texture;
