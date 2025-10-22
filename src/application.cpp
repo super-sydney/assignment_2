@@ -84,6 +84,22 @@ public:
 
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
 
+        initDragonPath();
+
+        m_pathPoints = sampleBezierPath(m_dragonPath, 50);
+
+        glGenVertexArrays(1, &m_pathVAO);
+        glGenBuffers(1, &m_pathVBO);
+
+        glBindVertexArray(m_pathVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_pathVBO);
+        glBufferData(GL_ARRAY_BUFFER, m_pathPoints.size() * sizeof(glm::vec3), m_pathPoints.data(), GL_STATIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+        glBindVertexArray(0);
+
+
         std::vector<std::string> faces = {
             std::string(RESOURCE_ROOT) + "resources/cubemap/px.png",
             std::string(RESOURCE_ROOT) + "resources/cubemap/nx.png",
@@ -109,6 +125,12 @@ public:
                 .addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/skybox_vert.glsl")
                 .addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/skybox_frag.glsl")
                 .build();
+
+            ShaderBuilder lineBuilder;
+            lineBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/line_vert.glsl");
+            lineBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/line_frag.glsl");
+            m_lineShader = lineBuilder.build();
+
 
             // Any new shaders can be added below in similar fashion.
             // ==> Don't forget to reconfigure CMake when you do!
@@ -145,6 +167,7 @@ public:
 
         // Initialize a default light
         m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f, 1.0f, 1.0f)});
+
     }
 
     GLuint loadCubemap(const std::vector<std::string>& faces)
@@ -307,6 +330,8 @@ public:
                 m_lastMousePos = cursor;
                 m_camera.processMouseMovement(delta.x, delta.y);
             }
+
+            updateBezierMotion(1.0f/60.0f);
 
             // Use ImGui for easy input/output of ints, floats, strings, etc...
             ImGui::Begin("Window");
@@ -478,6 +503,9 @@ public:
             ImGui::Checkbox("Use Environment Map", &m_useEnvironmentMapping);
 
             ImGui::Separator();
+            ImGui::Checkbox("Render the Bezier curves", &m_showPath);
+
+            ImGui::Separator();
             ImGui::Checkbox("Use material if no texture", &m_useMaterial);
             ImGui::End();
 
@@ -505,14 +533,22 @@ public:
             glBindVertexArray(0);
             glDepthFunc(GL_LESS); // reset to default
 
-
-
             // Update view matrix from camera
             m_viewMatrix = m_camera.getViewMatrix();
+
+            if (m_showPath) {
+                renderBezierPath();
+            }
+
+            // Mode matrix for dragon that translates and rotates it along the bezier path
+            m_modelMatrix = glm::translate(glm::mat4(1.0f), m_dragonPosition) * m_dragonRotation ;
+
             const glm::mat4 mvpMatrix = m_projectionMatrix * m_viewMatrix * m_modelMatrix;
+
             // Normals should be transformed differently than positions (ignoring translations + dealing with scaling):
             // https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
             const glm::mat3 normalModelMatrix = glm::inverseTranspose(glm::mat3(m_modelMatrix));
+
 
             for (GPUMesh& mesh : m_meshes) {
                 // Choose active shader based on UI toggle
@@ -520,7 +556,7 @@ public:
                 activeShader.bind();
                 glUniformMatrix4fv(activeShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpMatrix));
                 //Uncomment this line when you use the modelMatrix (or fragmentPosition)
-                //glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
+                glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
                 if (mesh.hasTextureCoords()) {
                     // If user wants to use textures, bind and tell shader to sample; otherwise treat as no texcoords for shading
@@ -685,6 +721,80 @@ public:
         std::cout << "Released mouse button: " << button << std::endl;
     }
 
+    struct CubicBezier {
+        glm::vec3 p0, p1, p2, p3;
+
+        glm::vec3 evaluate(float t) const {
+            float u = 1.0f - t;
+            return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+        }
+    };
+
+    void initDragonPath() {
+        m_dragonPath = {
+            { {0,1,3}, {1,2,3}, {2,2,3}, {3,1,3} }, // curve 1
+            { {3,1,3}, {4,0,2}, {2,-1,1}, {0,0,0} }, // curve 2
+            { {0,0,0}, {-1,1,1}, {-2,2,2}, {0,1,3} } // curve 3
+        };
+    }
+
+    void updateBezierMotion(float deltaTime) {
+        if (m_dragonPath.empty()) return;
+
+        m_curveT += m_curveSpeed * deltaTime;
+        if (m_curveT > 1.0f) {
+            m_curveT = 0.0f;
+            m_currentCurve = (m_currentCurve + 1) % m_dragonPath.size();
+        }
+
+        glm::vec3 newPos = m_dragonPath[m_currentCurve].evaluate(m_curveT);
+
+        float nextT = m_curveT + 0.01f;
+        if (nextT > 1.0f) nextT = 1.0f;
+        glm::vec3 nextPos = m_dragonPath[m_currentCurve].evaluate(nextT);
+        glm::vec3 direction = glm::normalize(newPos - nextPos);
+
+        // Build rotation from direction
+        glm::vec3 up(0.0f, 1.0f, 0.0f);
+        glm::vec3 right = glm::normalize(glm::cross(up, direction));
+        glm::vec3 correctedUp = glm::normalize(glm::cross(direction, right));
+
+        m_dragonRotation = glm::mat4(1.0f);
+        m_dragonRotation[0] = glm::vec4(right, 0.0f);
+        m_dragonRotation[1] = glm::vec4(correctedUp, 0.0f);
+        m_dragonRotation[2] = glm::vec4(direction, 0.0f);
+
+        m_dragonPosition = newPos;
+    }
+
+    void renderBezierPath() {
+        if (m_pathPoints.empty()) return;
+
+        m_lineShader.bind();
+        glUniformMatrix4fv(m_lineShader.getUniformLocation("view"),1, GL_FALSE, glm::value_ptr(m_viewMatrix));
+        glUniformMatrix4fv(m_lineShader.getUniformLocation("projection"), 1, GL_FALSE, glm::value_ptr(m_projectionMatrix));
+        // Set the line color to red
+        glUniform3f(m_lineShader.getUniformLocation("color"), 1.0f, 0.0f, 0.0f);
+
+        glBindVertexArray(m_pathVAO);
+        glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(m_pathPoints.size()));
+        glBindVertexArray(0);
+    }
+
+
+    std::vector<glm::vec3> sampleBezierPath(const std::vector<Application::CubicBezier>& curves, int samplesPerCurve = 20) {
+        std::vector<glm::vec3> points;
+        for (const auto& curve : curves) {
+            for (int i = 0; i <= samplesPerCurve; ++i) {
+                float t = static_cast<float>(i) / samplesPerCurve;
+                points.push_back(curve.evaluate(t));
+            }
+        }
+        return points;
+    }
+
+
+
 private:
     Window m_window;
 
@@ -694,6 +804,7 @@ private:
     // Basic blinn phong shader to compare against PBR
     Shader m_basicShader;
     Shader m_skyboxShader;
+    Shader m_lineShader;
 
     bool m_usePBR{true};
 
@@ -702,6 +813,19 @@ private:
 
     GLuint m_skyboxVAO = 0;
     GLuint m_skyboxVBO = 0;
+
+    glm::vec3 m_dragonPosition = glm::vec3(0.0f);
+	glm::mat4 m_dragonRotation = glm::mat4(1.0f);
+    std::vector<CubicBezier> m_dragonPath;
+    size_t m_currentCurve = 0;
+    float m_curveT = 0.0f;
+    float m_curveSpeed = 0.25f; 
+
+	bool m_showPath = true;
+    GLuint m_pathVAO = 0;
+    GLuint m_pathVBO = 0;
+    std::vector<glm::vec3> m_pathPoints;
+
 
     std::vector<GPUMesh> m_meshes;
     std::unique_ptr<Texture> m_texture;
