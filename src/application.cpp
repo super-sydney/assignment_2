@@ -168,6 +168,24 @@ public:
         // Initialize a default light
         m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f, 1.0f, 1.0f)});
 
+        const int segmentCount = 6;        
+        const float segmentLength = 0.3f;  
+        auto head = std::make_unique<SnakeSegment>();
+        head->localPosition = glm::vec3(0.0f);
+        SnakeSegment* prev = head.get();
+        m_snakeSegments.push_back(prev);
+
+        for (int i = 1; i < segmentCount; ++i) {
+            auto seg = std::make_unique<SnakeSegment>();
+            seg->localPosition = glm::vec3(0.0f, 0.0f, segmentLength);
+            prev->child = std::move(seg);
+            prev = prev->child.get();
+            m_snakeSegments.push_back(prev);
+        }
+
+        m_snakeRoot = std::move(head);
+
+
     }
 
     GLuint loadCubemap(const std::vector<std::string>& faces)
@@ -331,7 +349,6 @@ public:
                 m_camera.processMouseMovement(delta.x, delta.y);
             }
 
-            updateBezierMotion(1.0f/60.0f);
 
             // Use ImGui for easy input/output of ints, floats, strings, etc...
             ImGui::Begin("Window");
@@ -507,6 +524,14 @@ public:
 
             ImGui::Separator();
             ImGui::Checkbox("Use material if no texture", &m_useMaterial);
+
+            ImGui::Separator();
+            ImGui::Text("Snake animation controls:");
+            ImGui::SliderFloat("Wave Speed", &m_snakeWaveSpeed, 0.0f, 10.0f);
+            ImGui::SliderFloat("Wave Amplitude (deg)", &m_snakeWaveAmplitude, 0.0f, glm::radians(90.0f));
+            ImGui::SliderFloat("Wavelength", &m_snakeWavelength, 0.1f, 2.0f);
+            ImGui::Checkbox("Pause Snake", &m_snakePaused);
+
             ImGui::End();
 
             // Clear the screen
@@ -536,9 +561,18 @@ public:
             // Update view matrix from camera
             m_viewMatrix = m_camera.getViewMatrix();
 
+
             if (m_showPath) {
                 renderBezierPath();
             }
+
+            updateSnakeMotion(deltaTime);
+            updateSnake(deltaTime);
+            drawSnake();
+
+
+            // Dragon motion along bezier path
+            updateBezierMotion(deltaTime);
 
             // Mode matrix for dragon that translates and rotates it along the bezier path
             m_modelMatrix = glm::translate(glm::mat4(1.0f), m_dragonPosition) * m_dragonRotation ;
@@ -683,6 +717,8 @@ public:
         }
     }
 
+    
+
     // In here you can handle key presses
     // key - Integer that corresponds to numbers in https://www.glfw.org/docs/latest/group__keys.html
     // mods - Any modifier keys pressed, like shift or control
@@ -793,6 +829,97 @@ public:
         return points;
     }
 
+    struct SnakeSegment {
+        glm::vec3 localPosition;
+        glm::mat4 localRotation = glm::mat4(1.0f);
+        std::unique_ptr<SnakeSegment> child = nullptr;
+    };
+
+    void updateSnake(float dt) {
+        if (m_snakeSegments.empty() || m_snakePaused) return;
+
+        m_snakeTime += dt;
+
+        for (size_t i = 0; i < m_snakeSegments.size(); ++i) {
+            float phase = m_snakeTime * m_snakeWaveSpeed - static_cast<float>(i) * m_snakeWavelength;
+            float angle = sin(phase) * m_snakeWaveAmplitude;
+
+            m_snakeSegments[i]->localRotation = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0, 1, 0));
+        }
+    }
+
+
+    void drawMeshWithShader(GPUMesh& mesh, const glm::mat4& modelMatrix)
+    {
+
+        Shader& shader = m_usePBR ? m_defaultShader : m_basicShader;
+        shader.bind();
+
+        glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
+        glUniformMatrix4fv(shader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniformMatrix4fv(shader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
+
+        glm::mat3 normalMatrix = glm::inverseTranspose(glm::mat3(modelMatrix));
+        glUniformMatrix3fv(shader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalMatrix));
+
+        mesh.draw(shader);
+    }
+
+
+    void drawSnakeSegment(SnakeSegment* segment, const glm::mat4& parentTransform) {
+        if (!segment) return;
+
+        glm::mat4 model =
+            parentTransform *
+            glm::translate(glm::mat4(1.0f), segment->localPosition) *
+            segment->localRotation;
+
+        
+        if (!m_meshes.empty())
+            drawMeshWithShader(m_meshes[0], model); 
+
+        drawSnakeSegment(segment->child.get(), model);
+    }
+
+    void drawSnake() {
+        if (!m_snakeRoot) return;
+
+        glm::mat4 base =
+            glm::translate(glm::mat4(1.0f), m_snakePosition) *
+            m_snakeRotation;
+
+        drawSnakeSegment(m_snakeRoot.get(), base);
+    }
+
+    void updateSnakeMotion(float deltaTime) {
+        if (m_dragonPath.empty()) return;
+
+        m_snakeT += m_snakeSpeed * deltaTime;
+        if (m_snakeT > 1.0f) {
+            m_snakeT = 0.0f;
+            m_snakeCurve = (m_snakeCurve + 1) % m_dragonPath.size();
+        }
+
+        glm::vec3 newPos = m_dragonPath[m_snakeCurve].evaluate(m_snakeT);
+
+        float nextT = m_snakeT + 0.01f;
+        if (nextT > 1.0f) nextT = 1.0f;
+        glm::vec3 nextPos = m_dragonPath[m_snakeCurve].evaluate(nextT);
+        glm::vec3 direction = glm::normalize(newPos - nextPos);
+
+        // Build rotation so the snake faces along the path
+        glm::vec3 up(0.0f, 1.0f, 0.0f);
+        glm::vec3 right = glm::normalize(glm::cross(up, direction));
+        glm::vec3 correctedUp = glm::normalize(glm::cross(direction, right));
+
+        m_snakeRotation = glm::mat4(1.0f);
+        m_snakeRotation[0] = glm::vec4(right, 0.0f);
+        m_snakeRotation[1] = glm::vec4(correctedUp, 0.0f);
+        m_snakeRotation[2] = glm::vec4(direction, 0.0f);
+
+        m_snakePosition = newPos;
+    }
+
 
 
 private:
@@ -826,6 +953,20 @@ private:
     GLuint m_pathVBO = 0;
     std::vector<glm::vec3> m_pathPoints;
 
+    std::unique_ptr<SnakeSegment> m_snakeRoot;
+    std::vector<SnakeSegment*> m_snakeSegments;
+    float m_snakeTime = 0.0f;
+    glm::vec3 m_snakePosition = glm::vec3(0.0f);
+    glm::mat4 m_snakeRotation = glm::mat4(1.0f);
+    float m_snakeT = 0.0f;
+    float m_snakeSpeed = 0.2f; // can be same or different from dragon
+    size_t m_snakeCurve = 2;
+
+    // Snake animation parameters
+    float m_snakeWaveSpeed = 3.0f;
+    float m_snakeWaveAmplitude = glm::radians(20.0f); // in radians
+    float m_snakeWavelength = 0.6f;
+    bool m_snakePaused = false;
 
     std::vector<GPUMesh> m_meshes;
     std::unique_ptr<Texture> m_texture;
