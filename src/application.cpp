@@ -84,9 +84,9 @@ public:
 
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
 
-        initDragonPath();
+        initSnakePath();
 
-        m_pathPoints = sampleBezierPath(m_dragonPath, 50);
+        m_pathPoints = sampleBezierPath(m_snakePath, 50);
 
         glGenVertexArrays(1, &m_pathVAO);
         glGenBuffers(1, &m_pathVBO);
@@ -168,6 +168,8 @@ public:
         // Initialize a default light
         m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f, 1.0f, 1.0f)});
 
+
+        // Initialise Snake
         const int segmentCount = 6;        
         const float segmentLength = 0.3f;  
         auto head = std::make_unique<SnakeSegment>();
@@ -543,7 +545,7 @@ public:
 
 
             // Draw Skybox
-            glDepthFunc(GL_LEQUAL); // change depth function so skybox passes when depth is 1.0
+            glDepthFunc(GL_LEQUAL);
             m_skyboxShader.bind();
 
             // Remove translation from view matrix
@@ -569,13 +571,6 @@ public:
             updateSnakeMotion(deltaTime);
             updateSnake(deltaTime);
             drawSnake();
-
-
-            // Dragon motion along bezier path
-            updateBezierMotion(deltaTime);
-
-            // Mode matrix for dragon that translates and rotates it along the bezier path
-            m_modelMatrix = glm::translate(glm::mat4(1.0f), m_dragonPosition) * m_dragonRotation ;
 
             const glm::mat4 mvpMatrix = m_projectionMatrix * m_viewMatrix * m_modelMatrix;
 
@@ -766,41 +761,12 @@ public:
         }
     };
 
-    void initDragonPath() {
-        m_dragonPath = {
+    void initSnakePath() {
+        m_snakePath = {
             { {0,1,3}, {1,2,3}, {2,2,3}, {3,1,3} }, // curve 1
             { {3,1,3}, {4,0,2}, {2,-1,1}, {0,0,0} }, // curve 2
             { {0,0,0}, {-1,1,1}, {-2,2,2}, {0,1,3} } // curve 3
         };
-    }
-
-    void updateBezierMotion(float deltaTime) {
-        if (m_dragonPath.empty()) return;
-
-        m_curveT += m_curveSpeed * deltaTime;
-        if (m_curveT > 1.0f) {
-            m_curveT = 0.0f;
-            m_currentCurve = (m_currentCurve + 1) % m_dragonPath.size();
-        }
-
-        glm::vec3 newPos = m_dragonPath[m_currentCurve].evaluate(m_curveT);
-
-        float nextT = m_curveT + 0.01f;
-        if (nextT > 1.0f) nextT = 1.0f;
-        glm::vec3 nextPos = m_dragonPath[m_currentCurve].evaluate(nextT);
-        glm::vec3 direction = glm::normalize(newPos - nextPos);
-
-        // Build rotation from direction
-        glm::vec3 up(0.0f, 1.0f, 0.0f);
-        glm::vec3 right = glm::normalize(glm::cross(up, direction));
-        glm::vec3 correctedUp = glm::normalize(glm::cross(direction, right));
-
-        m_dragonRotation = glm::mat4(1.0f);
-        m_dragonRotation[0] = glm::vec4(right, 0.0f);
-        m_dragonRotation[1] = glm::vec4(correctedUp, 0.0f);
-        m_dragonRotation[2] = glm::vec4(direction, 0.0f);
-
-        m_dragonPosition = newPos;
     }
 
     void renderBezierPath() {
@@ -835,7 +801,7 @@ public:
         std::unique_ptr<SnakeSegment> child = nullptr;
     };
 
-    void updateSnake(float dt) {
+    void updateSnake(float dt) { // For updating the slithering motion of the snake
         if (m_snakeSegments.empty() || m_snakePaused) return;
 
         m_snakeTime += dt;
@@ -892,19 +858,22 @@ public:
     }
 
     void updateSnakeMotion(float deltaTime) {
-        if (m_dragonPath.empty()) return;
+        if (m_snakePath.empty()) return;
 
         m_snakeT += m_snakeSpeed * deltaTime;
         if (m_snakeT > 1.0f) {
             m_snakeT = 0.0f;
-            m_snakeCurve = (m_snakeCurve + 1) % m_dragonPath.size();
+            m_snakeCurve = (m_snakeCurve + 1) % m_snakePath.size();
         }
 
-        glm::vec3 newPos = m_dragonPath[m_snakeCurve].evaluate(m_snakeT);
+        // evaluate next position on the bezier curve
+        glm::vec3 newPos = m_snakePath[m_snakeCurve].evaluate(m_snakeT);
 
+
+        // This block is for the direction of the snake
         float nextT = m_snakeT + 0.01f;
         if (nextT > 1.0f) nextT = 1.0f;
-        glm::vec3 nextPos = m_dragonPath[m_snakeCurve].evaluate(nextT);
+        glm::vec3 nextPos = m_snakePath[m_snakeCurve].evaluate(nextT);
         glm::vec3 direction = glm::normalize(newPos - nextPos);
 
         // Build rotation so the snake faces along the path
@@ -941,9 +910,6 @@ private:
     GLuint m_skyboxVAO = 0;
     GLuint m_skyboxVBO = 0;
 
-    glm::vec3 m_dragonPosition = glm::vec3(0.0f);
-	glm::mat4 m_dragonRotation = glm::mat4(1.0f);
-    std::vector<CubicBezier> m_dragonPath;
     size_t m_currentCurve = 0;
     float m_curveT = 0.0f;
     float m_curveSpeed = 0.25f; 
@@ -953,16 +919,16 @@ private:
     GLuint m_pathVBO = 0;
     std::vector<glm::vec3> m_pathPoints;
 
+    std::vector<CubicBezier> m_snakePath;
     std::unique_ptr<SnakeSegment> m_snakeRoot;
     std::vector<SnakeSegment*> m_snakeSegments;
     float m_snakeTime = 0.0f;
     glm::vec3 m_snakePosition = glm::vec3(0.0f);
     glm::mat4 m_snakeRotation = glm::mat4(1.0f);
     float m_snakeT = 0.0f;
-    float m_snakeSpeed = 0.2f; // can be same or different from dragon
+    float m_snakeSpeed = 0.2f; 
     size_t m_snakeCurve = 2;
 
-    // Snake animation parameters
     float m_snakeWaveSpeed = 3.0f;
     float m_snakeWaveAmplitude = glm::radians(20.0f); // in radians
     float m_snakeWavelength = 0.6f;
