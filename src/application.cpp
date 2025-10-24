@@ -22,6 +22,8 @@ DISABLE_WARNINGS_POP()
 #include <functional>
 #include <iostream>
 #include <vector>
+#include <stb/stb_image.h>
+
 
 class Application {
 public:
@@ -82,6 +84,32 @@ public:
 
         m_meshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/dragon.obj");
 
+        initSnakePath();
+
+        m_pathPoints = sampleBezierPath(m_snakePath, 50);
+
+        glGenVertexArrays(1, &m_pathVAO);
+        glGenBuffers(1, &m_pathVBO);
+
+        glBindVertexArray(m_pathVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_pathVBO);
+        glBufferData(GL_ARRAY_BUFFER, m_pathPoints.size() * sizeof(glm::vec3), m_pathPoints.data(), GL_STATIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+        glBindVertexArray(0);
+
+
+        std::vector<std::string> faces = {
+            std::string(RESOURCE_ROOT) + "resources/cubemap/px.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/nx.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/py.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/ny.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/pz.png",
+            std::string(RESOURCE_ROOT) + "resources/cubemap/nz.png",
+        };
+        m_cubemapTexture = loadCubemap(faces);
+
         try {
             ShaderBuilder defaultBuilder;
             defaultBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shader_vert.glsl");
@@ -93,6 +121,17 @@ public:
             shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "Shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
 
+            m_skyboxShader = ShaderBuilder()
+                .addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/skybox_vert.glsl")
+                .addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/skybox_frag.glsl")
+                .build();
+
+            ShaderBuilder lineBuilder;
+            lineBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/line_vert.glsl");
+            lineBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/line_frag.glsl");
+            m_lineShader = lineBuilder.build();
+
+
             // Any new shaders can be added below in similar fashion.
             // ==> Don't forget to reconfigure CMake when you do!
             //     Visual Studio: PROJECT => Generate Cache for ComputerGraphics
@@ -101,6 +140,10 @@ public:
         } catch (ShaderLoadingException e) {
             std::cerr << e.what() << std::endl;
         }
+
+		// setup skybox VAO/VBO
+        setupSkybox();
+
 
         // Blinn-phong shader for comparison
         try
@@ -124,7 +167,152 @@ public:
 
         // Initialize a default light
         m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f, 1.0f, 1.0f)});
+
+
+        // Initialise Snake
+        const int segmentCount = 6;        
+        const float segmentLength = 0.3f;  
+        auto head = std::make_unique<SnakeSegment>();
+        head->localPosition = glm::vec3(0.0f);
+        SnakeSegment* prev = head.get();
+        m_snakeSegments.push_back(prev);
+
+        for (int i = 1; i < segmentCount; ++i) {
+            auto seg = std::make_unique<SnakeSegment>();
+            seg->localPosition = glm::vec3(0.0f, 0.0f, segmentLength);
+            prev->child = std::move(seg);
+            prev = prev->child.get();
+            m_snakeSegments.push_back(prev);
+        }
+
+        m_snakeRoot = std::move(head);
+
+
     }
+
+    GLuint loadCubemap(const std::vector<std::string>& faces)
+    {
+        if (faces.size() != 6) {
+            std::cerr << "loadCubemap: expected 6 faces, got " << faces.size() << std::endl;
+            return 0;
+        }
+
+        // Important: ensure stb doesn't flip cubemap faces unexpectedly
+        stbi_set_flip_vertically_on_load(false);
+
+        GLuint textureID = 0;
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+
+        // In case row alignment is not 4 (defensive)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+        for (unsigned int i = 0; i < faces.size(); ++i) {
+            int width = 0, height = 0, nrChannels = 0;
+            // Force 0 to get number of channels; we will handle both 3 and 4 channels
+            stbi_uc* data = stbi_load(faces[i].c_str(), &width, &height, &nrChannels, 0);
+
+            if (!data) {
+                std::cerr << "Cubemap failed to load at path: " << faces[i] << "\n";
+                std::cerr << " stbi failure: " << stbi_failure_reason() << std::endl;
+                // leave the face empty (still valid) or bail out:
+                // return 0;
+                continue;
+            }
+
+            if (width != height) {
+                std::cerr << "Warning: cubemap face not square: " << faces[i] << " (" << width << "x" << height << ")\n";
+            }
+
+            GLenum format = GL_RGB;
+            if (nrChannels == 1) format = GL_RED;
+            else if (nrChannels == 3) format = GL_RGB;
+            else if (nrChannels == 4) format = GL_RGBA;
+            else {
+                std::cerr << "Unexpected channel count (" << nrChannels << ") for " << faces[i] << std::endl;
+            }
+
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+                0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+
+            stbi_image_free(data);
+
+            std::cout << "Loaded cubemap face " << i << ": " << faces[i]
+                << " (" << width << "x" << height << ", ch=" << nrChannels << ")\n";
+        }
+
+        // Filters + wrapping
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+        // Generate mipmaps if you set MIN_FILTER to a mipmap mode
+        glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+
+        // restore default alignment
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+        return textureID;
+    }
+
+    void setupSkybox()
+    {
+        float skyboxVertices[] = {
+            -1.0f,  1.0f, -1.0f,
+            -1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+             1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+
+            -1.0f, -1.0f,  1.0f,
+            -1.0f, -1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f,  1.0f,
+            -1.0f, -1.0f,  1.0f,
+
+             1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+
+            -1.0f, -1.0f,  1.0f,
+            -1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f, -1.0f,  1.0f,
+            -1.0f, -1.0f,  1.0f,
+
+            -1.0f,  1.0f, -1.0f,
+             1.0f,  1.0f, -1.0f,
+             1.0f,  1.0f,  1.0f,
+             1.0f,  1.0f,  1.0f,
+            -1.0f,  1.0f,  1.0f,
+            -1.0f,  1.0f, -1.0f,
+
+            -1.0f, -1.0f, -1.0f,
+            -1.0f, -1.0f,  1.0f,
+             1.0f, -1.0f, -1.0f,
+             1.0f, -1.0f, -1.0f,
+            -1.0f, -1.0f,  1.0f,
+             1.0f, -1.0f,  1.0f
+        };
+
+        glGenVertexArrays(1, &m_skyboxVAO);
+        glGenBuffers(1, &m_skyboxVBO);
+        glBindVertexArray(m_skyboxVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_skyboxVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+    }
+
 
     void update()
     {
@@ -162,6 +350,7 @@ public:
                 m_lastMousePos = cursor;
                 m_camera.processMouseMovement(delta.x, delta.y);
             }
+
 
             // Use ImGui for easy input/output of ints, floats, strings, etc...
             ImGui::Begin("Window");
@@ -330,7 +519,21 @@ public:
             }
 
             ImGui::Separator();
+            ImGui::Checkbox("Use Environment Map", &m_useEnvironmentMapping);
+
+            ImGui::Separator();
+            ImGui::Checkbox("Render the Bezier curves", &m_showPath);
+
+            ImGui::Separator();
             ImGui::Checkbox("Use material if no texture", &m_useMaterial);
+
+            ImGui::Separator();
+            ImGui::Text("Snake animation controls:");
+            ImGui::SliderFloat("Wave Speed", &m_snakeWaveSpeed, 0.0f, 10.0f);
+            ImGui::SliderFloat("Wave Amplitude (deg)", &m_snakeWaveAmplitude, 0.0f, glm::radians(90.0f));
+            ImGui::SliderFloat("Wavelength", &m_snakeWavelength, 0.1f, 2.0f);
+            ImGui::Checkbox("Pause Snake", &m_snakePaused);
+
             ImGui::End();
 
             // Clear the screen
@@ -340,12 +543,41 @@ public:
             // ...
             glEnable(GL_DEPTH_TEST);
 
+
+            // Draw Skybox
+            glDepthFunc(GL_LEQUAL);
+            m_skyboxShader.bind();
+
+            // Remove translation from view matrix
+            glm::mat4 viewNoTranslate = glm::mat4(glm::mat3(m_camera.getViewMatrix()));
+            glUniformMatrix4fv(m_skyboxShader.getUniformLocation("view"), 1, GL_FALSE, glm::value_ptr(viewNoTranslate));
+            glUniformMatrix4fv(m_skyboxShader.getUniformLocation("projection"), 1, GL_FALSE, glm::value_ptr(m_projectionMatrix));
+
+            glBindVertexArray(m_skyboxVAO);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glBindVertexArray(0);
+            glDepthFunc(GL_LESS); // reset to default
+
             // Update view matrix from camera
             m_viewMatrix = m_camera.getViewMatrix();
+
+
+            if (m_showPath) {
+                renderBezierPath();
+            }
+
+            updateSnakeMotion(deltaTime);
+            updateSnake(deltaTime);
+            drawSnake();
+
             const glm::mat4 mvpMatrix = m_projectionMatrix * m_viewMatrix * m_modelMatrix;
+
             // Normals should be transformed differently than positions (ignoring translations + dealing with scaling):
             // https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
             const glm::mat3 normalModelMatrix = glm::inverseTranspose(glm::mat3(m_modelMatrix));
+
 
             for (GPUMesh& mesh : m_meshes) {
                 // Choose active shader based on UI toggle
@@ -353,7 +585,7 @@ public:
                 activeShader.bind();
                 glUniformMatrix4fv(activeShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpMatrix));
                 //Uncomment this line when you use the modelMatrix (or fragmentPosition)
-                //glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
+                glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
                 glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
                 if (mesh.hasTextureCoords()) {
                     // If user wants to use textures, bind and tell shader to sample; otherwise treat as no texcoords for shading
@@ -382,6 +614,7 @@ public:
                 }
                 // Upload camera and material uniforms
                 glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+
 
                 // Update material UBO for this mesh (std140 block 'Material')
                 GPUMaterial mat;
@@ -462,6 +695,15 @@ public:
                 int locRoughVal = activeShader.getUniformLocation("roughnessValue");
                 if (locRoughVal >= 0)
                     glUniform1f(locRoughVal, m_roughness);
+
+				// Environment mapping on texture 5
+                glUniform1i(activeShader.getUniformLocation("useEnvironmentMap"), m_useEnvironmentMapping ? GL_TRUE : GL_FALSE);
+                if (m_useEnvironmentMapping) {
+                    glActiveTexture(GL_TEXTURE5);
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+                    glUniform1i(activeShader.getUniformLocation("environmentMap"), 5);
+                }
+
                 mesh.draw(activeShader);
             }
 
@@ -469,6 +711,8 @@ public:
             m_window.swapBuffers();
         }
     }
+
+    
 
     // In here you can handle key presses
     // key - Integer that corresponds to numbers in https://www.glfw.org/docs/latest/group__keys.html
@@ -508,6 +752,145 @@ public:
         std::cout << "Released mouse button: " << button << std::endl;
     }
 
+    struct CubicBezier {
+        glm::vec3 p0, p1, p2, p3;
+
+        glm::vec3 evaluate(float t) const {
+            float u = 1.0f - t;
+            return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+        }
+    };
+
+    void initSnakePath() {
+        m_snakePath = {
+            { {0,1,3}, {1,2,3}, {2,2,3}, {3,1,3} }, // curve 1
+            { {3,1,3}, {4,0,2}, {2,-1,1}, {0,0,0} }, // curve 2
+            { {0,0,0}, {-1,1,1}, {-2,2,2}, {0,1,3} } // curve 3
+        };
+    }
+
+    void renderBezierPath() {
+        if (m_pathPoints.empty()) return;
+
+        m_lineShader.bind();
+        glUniformMatrix4fv(m_lineShader.getUniformLocation("view"),1, GL_FALSE, glm::value_ptr(m_viewMatrix));
+        glUniformMatrix4fv(m_lineShader.getUniformLocation("projection"), 1, GL_FALSE, glm::value_ptr(m_projectionMatrix));
+        // Set the line color to red
+        glUniform3f(m_lineShader.getUniformLocation("color"), 1.0f, 0.0f, 0.0f);
+
+        glBindVertexArray(m_pathVAO);
+        glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(m_pathPoints.size()));
+        glBindVertexArray(0);
+    }
+
+
+    std::vector<glm::vec3> sampleBezierPath(const std::vector<Application::CubicBezier>& curves, int samplesPerCurve = 20) {
+        std::vector<glm::vec3> points;
+        for (const auto& curve : curves) {
+            for (int i = 0; i <= samplesPerCurve; ++i) {
+                float t = static_cast<float>(i) / samplesPerCurve;
+                points.push_back(curve.evaluate(t));
+            }
+        }
+        return points;
+    }
+
+    struct SnakeSegment {
+        glm::vec3 localPosition;
+        glm::mat4 localRotation = glm::mat4(1.0f);
+        std::unique_ptr<SnakeSegment> child = nullptr;
+    };
+
+    void updateSnake(float dt) { // For updating the slithering motion of the snake
+        if (m_snakeSegments.empty() || m_snakePaused) return;
+
+        m_snakeTime += dt;
+
+        for (size_t i = 0; i < m_snakeSegments.size(); ++i) {
+            float phase = m_snakeTime * m_snakeWaveSpeed - static_cast<float>(i) * m_snakeWavelength;
+            float angle = sin(phase) * m_snakeWaveAmplitude;
+
+            m_snakeSegments[i]->localRotation = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0, 1, 0));
+        }
+    }
+
+
+    void drawMeshWithShader(GPUMesh& mesh, const glm::mat4& modelMatrix)
+    {
+
+        Shader& shader = m_usePBR ? m_defaultShader : m_basicShader;
+        shader.bind();
+
+        glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * modelMatrix;
+        glUniformMatrix4fv(shader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniformMatrix4fv(shader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
+
+        glm::mat3 normalMatrix = glm::inverseTranspose(glm::mat3(modelMatrix));
+        glUniformMatrix3fv(shader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalMatrix));
+
+        mesh.draw(shader);
+    }
+
+
+    void drawSnakeSegment(SnakeSegment* segment, const glm::mat4& parentTransform) {
+        if (!segment) return;
+
+        glm::mat4 model =
+            parentTransform *
+            glm::translate(glm::mat4(1.0f), segment->localPosition) *
+            segment->localRotation;
+
+        
+        if (!m_meshes.empty())
+            drawMeshWithShader(m_meshes[0], model); 
+
+        drawSnakeSegment(segment->child.get(), model);
+    }
+
+    void drawSnake() {
+        if (!m_snakeRoot) return;
+
+        glm::mat4 base =
+            glm::translate(glm::mat4(1.0f), m_snakePosition) *
+            m_snakeRotation;
+
+        drawSnakeSegment(m_snakeRoot.get(), base);
+    }
+
+    void updateSnakeMotion(float deltaTime) {
+        if (m_snakePath.empty()) return;
+
+        m_snakeT += m_snakeSpeed * deltaTime;
+        if (m_snakeT > 1.0f) {
+            m_snakeT = 0.0f;
+            m_snakeCurve = (m_snakeCurve + 1) % m_snakePath.size();
+        }
+
+        // evaluate next position on the bezier curve
+        glm::vec3 newPos = m_snakePath[m_snakeCurve].evaluate(m_snakeT);
+
+
+        // This block is for the direction of the snake
+        float nextT = m_snakeT + 0.01f;
+        if (nextT > 1.0f) nextT = 1.0f;
+        glm::vec3 nextPos = m_snakePath[m_snakeCurve].evaluate(nextT);
+        glm::vec3 direction = glm::normalize(newPos - nextPos);
+
+        // Build rotation so the snake faces along the path
+        glm::vec3 up(0.0f, 1.0f, 0.0f);
+        glm::vec3 right = glm::normalize(glm::cross(up, direction));
+        glm::vec3 correctedUp = glm::normalize(glm::cross(direction, right));
+
+        m_snakeRotation = glm::mat4(1.0f);
+        m_snakeRotation[0] = glm::vec4(right, 0.0f);
+        m_snakeRotation[1] = glm::vec4(correctedUp, 0.0f);
+        m_snakeRotation[2] = glm::vec4(direction, 0.0f);
+
+        m_snakePosition = newPos;
+    }
+
+
+
 private:
     Window m_window;
 
@@ -516,7 +899,40 @@ private:
     Shader m_shadowShader;
     // Basic blinn phong shader to compare against PBR
     Shader m_basicShader;
+    Shader m_skyboxShader;
+    Shader m_lineShader;
+
     bool m_usePBR{true};
+
+	bool m_useEnvironmentMapping { false };
+    GLuint m_cubemapTexture;
+
+    GLuint m_skyboxVAO = 0;
+    GLuint m_skyboxVBO = 0;
+
+    size_t m_currentCurve = 0;
+    float m_curveT = 0.0f;
+    float m_curveSpeed = 0.25f; 
+
+	bool m_showPath = true;
+    GLuint m_pathVAO = 0;
+    GLuint m_pathVBO = 0;
+    std::vector<glm::vec3> m_pathPoints;
+
+    std::vector<CubicBezier> m_snakePath;
+    std::unique_ptr<SnakeSegment> m_snakeRoot;
+    std::vector<SnakeSegment*> m_snakeSegments;
+    float m_snakeTime = 0.0f;
+    glm::vec3 m_snakePosition = glm::vec3(0.0f);
+    glm::mat4 m_snakeRotation = glm::mat4(1.0f);
+    float m_snakeT = 0.0f;
+    float m_snakeSpeed = 0.2f; 
+    size_t m_snakeCurve = 2;
+
+    float m_snakeWaveSpeed = 3.0f;
+    float m_snakeWaveAmplitude = glm::radians(20.0f); // in radians
+    float m_snakeWavelength = 0.6f;
+    bool m_snakePaused = false;
 
     std::vector<GPUMesh> m_meshes;
     std::unique_ptr<Texture> m_texture;

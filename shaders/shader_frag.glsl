@@ -8,6 +8,9 @@ layout(std140) uniform Material // Must match the GPUMaterial defined in src/mes
 	float transparency;
 };
 
+uniform samplerCube environmentMap;   
+uniform bool useEnvironmentMap;  
+
 uniform sampler2D colorMap;
 uniform bool hasTexCoords;
 uniform bool useTexture;
@@ -130,6 +133,14 @@ void main()
         vec3 ambient = ka * lightColor * ao * albedo * 0.1;
         vec3 Lo = (diffuse * ao + specular) * lightColor * NdotL;
         vec3 color = ambient + Lo;
+
+        if (useEnvironmentMap) {
+            vec3 I = normalize(fragPosition - cameraPosition);
+            vec3 R = reflect(I, Nsample);                     
+            vec3 envColor = texture(environmentMap, R).rgb;   
+            float reflectionStrength = 0.2;                   
+            color = mix(color, envColor, reflectionStrength);
+        }
 
         // Linear back to sRGB
         fragColor = vec4(pow(color, vec3(1.0/2.2)), transparency);
