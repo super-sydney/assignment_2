@@ -118,7 +118,7 @@ public:
 
             ShaderBuilder shadowBuilder;
             shadowBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/shadow_vert.glsl");
-            shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "Shaders/shadow_frag.glsl");
+            shadowBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/shadow_frag.glsl");
             m_shadowShader = shadowBuilder.build();
 
             m_skyboxShader = ShaderBuilder()
