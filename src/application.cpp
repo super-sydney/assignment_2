@@ -159,11 +159,65 @@ public:
             std::cerr << "Warning: failed to load basic shader: " << e.what() << std::endl;
         }
 
+        // Water shader
+        try
+        {
+            ShaderBuilder waterBuilder;
+            // Use the existing vertex shader for simplicity; if you have a custom vertex shader for water, replace the path
+            waterBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/water_vert.glsl");
+            waterBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/water_frag.glsl");
+            m_waterShader = waterBuilder.build();
+        }
+        catch (ShaderLoadingException &e)
+        {
+            std::cerr << "Warning: failed to load water shader: " << e.what() << std::endl;
+        }
+
+        // Load mesh for water surface
+        try
+        {
+            auto planeMeshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/water_circle.obj");
+            if (!planeMeshes.empty())
+            {
+                std::cout << "Loaded water plane mesh." << std::endl;
+                m_planeMesh = std::move(planeMeshes[0]);
+            }
+        }
+        catch (const MeshLoadingException &e)
+        {
+            std::cerr << "Warning: failed to load plane mesh: " << e.what() << std::endl;
+        }
+
+        // Load mesh for the ground
+        try
+        {
+            auto groundMeshes = GPUMesh::loadMeshGPU(RESOURCE_ROOT "resources/Beach.obj");
+            if (!groundMeshes.empty())
+            {
+                std::cout << "Loaded ground plane mesh." << std::endl;
+                m_groundMesh = std::move(groundMeshes[0]);
+            }
+        }
+        catch (const MeshLoadingException &e)
+        {
+            std::cerr << "Warning: failed to load ground plane: " << e.what() << std::endl;
+        }
+
+        // Configure ground and water model matrices
+        m_groundModelMatrix = glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -5.0f, 0.0f)), glm::vec3(10.0f));
+        m_waterModelMatrix = glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.0f)), glm::vec3(10.0f));
+
         // Initialize simple material params (these will be uploaded as uniforms)
         m_kd = glm::vec3(0.5f);
         m_ks = glm::vec3(0.5f);
         m_shininess = 3.0f;
         m_transparency = 1.0f;
+
+        // Default water wave params
+        m_numWaves = 10;
+        m_omega = 3.0f;
+        m_phi = 1.0f;
+        m_amplitude = 0.008f;
 
         // Initialize a default light
         m_lights.push_back({glm::vec3(2.0f, 4.0f, 2.0f), glm::vec3(1.0f, 1.0f, 1.0f)});
@@ -417,122 +471,137 @@ public:
             }
 
             ImGui::Separator();
-            ImGui::Checkbox("Use Texture", &m_useTexture);
-            ImGui::SameLine();
-            ImGui::Checkbox("Use PBR shader", &m_usePBR);
-            ImGui::SameLine();
-            if (ImGui::Button("Choose Texture..."))
+            if (ImGui::CollapsingHeader("PBR"))
             {
-                if (auto path = pickOpenFile("png,jpg"))
+                ImGui::Checkbox("Use Texture", &m_useTexture);
+                ImGui::SameLine();
+                ImGui::Checkbox("Use PBR shader", &m_usePBR);
+                ImGui::SameLine();
+                if (ImGui::Button("Choose Texture..."))
                 {
-                    try
+                    if (auto path = pickOpenFile("png,jpg"))
                     {
-                        m_texture = std::make_unique<Texture>(path->string());
-                        m_useTexture = true;
-                    }
-                    catch (...)
-                    {
-                        std::cerr << "Failed to load normal map" << std::endl;
+                        try
+                        {
+                            m_texture = std::make_unique<Texture>(path->string());
+                            m_useTexture = true;
+                        }
+                        catch (...)
+                        {
+                            std::cerr << "Failed to load normal map" << std::endl;
+                        }
                     }
                 }
-            }
 
-            ImGui::Separator();
-            ImGui::Checkbox("Use Normal Map", &m_useNormalMap);
-            ImGui::SameLine();
-            if (ImGui::Button("Choose Normal Map..."))
-            {
-                if (auto path = pickOpenFile("png,jpg"))
+                ImGui::Separator();
+                ImGui::Checkbox("Use Normal Map", &m_useNormalMap);
+                ImGui::SameLine();
+                if (ImGui::Button("Choose Normal Map..."))
                 {
-                    try
+                    if (auto path = pickOpenFile("png,jpg"))
                     {
-                        m_normalMap = std::make_unique<Texture>(path->string());
-                        m_useNormalMap = true;
-                    }
-                    catch (...)
-                    {
-                        std::cerr << "Failed to load normal map" << std::endl;
+                        try
+                        {
+                            m_normalMap = std::make_unique<Texture>(path->string());
+                            m_useNormalMap = true;
+                        }
+                        catch (...)
+                        {
+                            std::cerr << "Failed to load normal map" << std::endl;
+                        }
                     }
                 }
-            }
 
-            ImGui::Separator();
-            ImGui::Checkbox("Use Roughness Map", &m_useRoughnessMap);
-            ImGui::SameLine();
-            if (ImGui::Button("Choose Roughness Map..."))
-            {
-                if (auto path = pickOpenFile("png,jpg"))
+                ImGui::Separator();
+                ImGui::Checkbox("Use Roughness Map", &m_useRoughnessMap);
+                ImGui::SameLine();
+                if (ImGui::Button("Choose Roughness Map..."))
                 {
-                    try
+                    if (auto path = pickOpenFile("png,jpg"))
                     {
-                        m_roughnessMap = std::make_unique<Texture>(path->string());
-                        m_useRoughnessMap = true;
-                    }
-                    catch (...)
-                    {
-                        std::cerr << "Failed to load roughness map" << std::endl;
+                        try
+                        {
+                            m_roughnessMap = std::make_unique<Texture>(path->string());
+                            m_useRoughnessMap = true;
+                        }
+                        catch (...)
+                        {
+                            std::cerr << "Failed to load roughness map" << std::endl;
+                        }
                     }
                 }
-            }
 
-            ImGui::Separator();
-            ImGui::Checkbox("Use AO Map", &m_useAOMap);
-            ImGui::SameLine();
-            if (ImGui::Button("Choose AO Map..."))
-            {
-                if (auto path = pickOpenFile("png,jpg"))
+                ImGui::Separator();
+                ImGui::Checkbox("Use AO Map", &m_useAOMap);
+                ImGui::SameLine();
+                if (ImGui::Button("Choose AO Map..."))
                 {
-                    try
+                    if (auto path = pickOpenFile("png,jpg"))
                     {
-                        m_aoMap = std::make_unique<Texture>(path->string());
-                        m_useAOMap = true;
-                    }
-                    catch (...)
-                    {
-                        std::cerr << "Failed to load AO map" << std::endl;
+                        try
+                        {
+                            m_aoMap = std::make_unique<Texture>(path->string());
+                            m_useAOMap = true;
+                        }
+                        catch (...)
+                        {
+                            std::cerr << "Failed to load AO map" << std::endl;
+                        }
                     }
                 }
-            }
 
-            ImGui::Separator();
-            ImGui::Checkbox("Use Height Map", &m_useHeightMap);
-            ImGui::SameLine();
-            if (ImGui::Button("Choose Height Map..."))
-            {
-                if (auto path = pickOpenFile("png,jpg"))
+                ImGui::Separator();
+                ImGui::Checkbox("Use Height Map", &m_useHeightMap);
+                ImGui::SameLine();
+                if (ImGui::Button("Choose Height Map..."))
                 {
-                    try
+                    if (auto path = pickOpenFile("png,jpg"))
                     {
-                        m_heightMap = std::make_unique<Texture>(path->string());
-                        m_useHeightMap = true;
-                    }
-                    catch (...)
-                    {
-                        std::cerr << "Failed to load height map" << std::endl;
+                        try
+                        {
+                            m_heightMap = std::make_unique<Texture>(path->string());
+                            m_useHeightMap = true;
+                        }
+                        catch (...)
+                        {
+                            std::cerr << "Failed to load height map" << std::endl;
+                        }
                     }
                 }
-            }
 
-            if (m_useHeightMap)
-            {
-                ImGui::SliderFloat("Height scale", &m_heightScale, 0.0f, 0.2f);
+                if (m_useHeightMap)
+                {
+                    ImGui::SliderFloat("Height scale", &m_heightScale, 0.0f, 0.2f);
+                }
             }
 
             ImGui::Separator();
             ImGui::Checkbox("Use Environment Map", &m_useEnvironmentMapping);
 
-            ImGui::Separator();
-            ImGui::Checkbox("Render the Bezier curves", &m_showPath);
+            if (ImGui::CollapsingHeader("Snake"))
+            {
+                ImGui::Separator();
+                ImGui::Checkbox("Render the Bezier curves", &m_showPath);
+
+                ImGui::Separator();
+                ImGui::Checkbox("Use material if no texture", &m_useMaterial);
+
+                ImGui::Separator();
+                ImGui::Text("Snake animation controls:");
+                ImGui::SliderFloat("Wave Speed", &m_snakeWaveSpeed, 0.0f, 10.0f);
+                ImGui::SliderFloat("Wave Amplitude (deg)", &m_snakeWaveAmplitude, 0.0f, glm::radians(90.0f));
+                ImGui::SliderFloat("Wavelength", &m_snakeWavelength, 0.1f, 2.0f);
+                ImGui::Checkbox("Pause Snake", &m_snakePaused);
+            }
 
             ImGui::Separator();
-            ImGui::Checkbox("Use material if no texture", &m_useMaterial);
-
-            ImGui::Separator();
-            ImGui::Text("Snake animation controls:");
-            ImGui::SliderFloat("Wave Speed", &m_snakeWaveSpeed, 0.0f, 10.0f);
-            ImGui::SliderFloat("Wave Amplitude (deg)", &m_snakeWaveAmplitude, 0.0f, glm::radians(90.0f));
-            ImGui::SliderFloat("Wavelength", &m_snakeWavelength, 0.1f, 2.0f);
-            ImGui::Checkbox("Pause Snake", &m_snakePaused);
+            if (ImGui::CollapsingHeader("Water"))
+            {
+                ImGui::SliderInt("Num Waves", &m_numWaves, 1, MAX_WAVES);
+                ImGui::SliderFloat("Omega", &m_omega, 0.1f, 5.0f);
+                ImGui::SliderFloat("Phi", &m_phi, 0.0f, 10.0f);
+                ImGui::SliderFloat("Amplitude", &m_amplitude, 0.001f, 0.01f);
+            }
 
             ImGui::End();
 
@@ -571,7 +640,80 @@ public:
             updateSnakeMotion(deltaTime);
             updateSnake(deltaTime);
             drawSnake();
+            // Draw ground plane
+            if (m_groundMesh.has_value())
+            {
+                Shader &activeShader = m_usePBR ? m_defaultShader : m_basicShader;
+                activeShader.bind();
 
+                glm::mat4 mvpGround = m_projectionMatrix * m_viewMatrix * m_groundModelMatrix;
+                glUniformMatrix4fv(activeShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpGround));
+                glUniformMatrix4fv(activeShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_groundModelMatrix));
+                glm::mat3 normalGround = glm::inverseTranspose(glm::mat3(m_groundModelMatrix));
+                glUniformMatrix3fv(activeShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalGround));
+
+                if (m_groundMesh->hasTextureCoords())
+                {
+                    if (m_useTexture)
+                    {
+                        if (m_texture)
+                            m_texture->bind(GL_TEXTURE0);
+                        glUniform1i(activeShader.getUniformLocation("colorMap"), 0);
+                        glUniform1i(activeShader.getUniformLocation("hasTexCoords"), GL_TRUE);
+                        glUniform1i(activeShader.getUniformLocation("useTexture"), GL_TRUE);
+                        glUniform1i(activeShader.getUniformLocation("useMaterial"), GL_FALSE);
+                    }
+                    else
+                    {
+                        glUniform1i(activeShader.getUniformLocation("hasTexCoords"), GL_FALSE);
+                        glUniform1i(activeShader.getUniformLocation("useTexture"), GL_FALSE);
+                        glUniform1i(activeShader.getUniformLocation("useMaterial"), m_useMaterial);
+                    }
+                }
+                else
+                {
+                    glUniform1i(activeShader.getUniformLocation("hasTexCoords"), GL_FALSE);
+                    glUniform1i(activeShader.getUniformLocation("useTexture"), GL_FALSE);
+                    glUniform1i(activeShader.getUniformLocation("useMaterial"), m_useMaterial);
+                }
+
+                // Upload camera and material uniforms
+                glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+
+                GPUMaterial gmat;
+                gmat.kd = m_kd;
+                gmat.ks = m_ks;
+                gmat.shininess = m_shininess;
+                gmat.transparency = m_transparency;
+                m_groundMesh->updateMaterialBuffer(gmat);
+
+                glm::vec3 lightPos = m_lights.empty() ? glm::vec3(2.0f, 4.0f, 2.0f) : m_lights[m_selectedLight].position;
+                glm::vec3 lightCol = m_lights.empty() ? glm::vec3(1.0f) : m_lights[m_selectedLight].color;
+                glUniform3fv(activeShader.getUniformLocation("lightPosition"), 1, glm::value_ptr(lightPos));
+                int locColor = activeShader.getUniformLocation("lightColor");
+                if (locColor >= 0)
+                    glUniform3fv(locColor, 1, glm::value_ptr(lightCol));
+                int locKa = activeShader.getUniformLocation("ka");
+                if (locKa >= 0)
+                    glUniform1f(locKa, m_ka);
+
+                // Normal map handling (if supported)
+                int locHasNM = activeShader.getUniformLocation("hasNormalMap");
+                if (locHasNM >= 0)
+                    glUniform1i(locHasNM, (m_useNormalMap && m_normalMap) ? GL_TRUE : GL_FALSE);
+                if (m_useNormalMap && m_normalMap)
+                {
+                    m_normalMap->bind(GL_TEXTURE1);
+                    int locNM = activeShader.getUniformLocation("normalMap");
+                    if (locNM >= 0)
+                        glUniform1i(locNM, 1);
+                }
+
+                m_groundMesh->draw(activeShader);
+            }
+
+            // Easiest way to dissapear the dragon
+            m_modelMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -100.0f, 0.0f));
             const glm::mat4 mvpMatrix = m_projectionMatrix * m_viewMatrix * m_modelMatrix;
 
             // Normals should be transformed differently than positions (ignoring translations + dealing with scaling):
@@ -584,9 +726,9 @@ public:
                 Shader &activeShader = m_usePBR ? m_defaultShader : m_basicShader;
                 activeShader.bind();
                 glUniformMatrix4fv(activeShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpMatrix));
-                //Uncomment this line when you use the modelMatrix (or fragmentPosition)
-                glUniformMatrix4fv(m_defaultShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
-                glUniformMatrix3fv(m_defaultShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
+                // Upload model/normal matrices
+                glUniformMatrix4fv(activeShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_modelMatrix));
+                glUniformMatrix3fv(activeShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalModelMatrix));
                 if (mesh.hasTextureCoords()) {
                     // If user wants to use textures, bind and tell shader to sample; otherwise treat as no texcoords for shading
                     if (m_useTexture)
@@ -698,21 +840,62 @@ public:
 
 				// Environment mapping on texture 5
                 glUniform1i(activeShader.getUniformLocation("useEnvironmentMap"), m_useEnvironmentMapping ? GL_TRUE : GL_FALSE);
-                if (m_useEnvironmentMapping) {
-                    glActiveTexture(GL_TEXTURE5);
-                    glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
-                    glUniform1i(activeShader.getUniformLocation("environmentMap"), 5);
-                }
+                glActiveTexture(GL_TEXTURE5);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+                glUniform1i(activeShader.getUniformLocation("environmentMap"), 5);
+                glActiveTexture(GL_TEXTURE0);
 
                 mesh.draw(activeShader);
+            }
+
+            // Draw water plane with water shader
+            if (m_planeMesh.has_value())
+            {
+                m_waterShader.bind();
+                const glm::mat4 &waterModel = m_waterModelMatrix;
+                glm::mat4 mvpWater = m_projectionMatrix * m_viewMatrix * waterModel;
+                glm::mat3 normalWater = glm::inverseTranspose(glm::mat3(waterModel));
+
+                // Set common uniforms expected by shaders
+                glUniformMatrix4fv(m_waterShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvpWater));
+                glUniformMatrix3fv(m_waterShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalWater));
+                // Provide model matrix so vertex shader can compute world-space fragPosition
+                glUniformMatrix4fv(m_waterShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(waterModel));
+                glUniform3fv(m_waterShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+                glUniform1f(m_waterShader.getUniformLocation("time"), (float)glfwGetTime());
+
+                // Upload light uniforms
+                glm::vec3 lightPos = m_lights.empty() ? glm::vec3(2.0f, 4.0f, 2.0f) : m_lights[m_selectedLight].position;
+                glm::vec3 lightCol = m_lights.empty() ? glm::vec3(1.0f) : m_lights[m_selectedLight].color;
+                glUniform3fv(m_waterShader.getUniformLocation("lightPosition"), 1, glm::value_ptr(lightPos));
+                glUniform3fv(m_waterShader.getUniformLocation("lightColor"), 1, glm::value_ptr(lightCol));
+                glUniform1f(m_waterShader.getUniformLocation("ka"), m_ka);
+
+                // Upload sum-of-sines parameters
+                glUniform1i(m_waterShader.getUniformLocation("numWaves"), m_numWaves);
+                glUniform1f(m_waterShader.getUniformLocation("omega"), m_omega);
+                glUniform1f(m_waterShader.getUniformLocation("phi"), m_phi);
+                glUniform1f(m_waterShader.getUniformLocation("alpha"), m_amplitude);
+
+                // Bind environment cubemap for water reflections (skybox)
+                glActiveTexture(GL_TEXTURE6);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+                glActiveTexture(GL_TEXTURE0);
+
+                // Update material UBO and draw
+                GPUMaterial mat;
+                mat.kd = m_kd;
+                mat.ks = m_ks;
+                mat.shininess = m_shininess;
+                mat.transparency = m_transparency;
+                m_planeMesh->updateMaterialBuffer(mat);
+                m_planeMesh->draw(m_waterShader);
             }
 
             // Processes input and swaps the window buffer
             m_window.swapBuffers();
         }
     }
-
-    
 
     // In here you can handle key presses
     // key - Integer that corresponds to numbers in https://www.glfw.org/docs/latest/group__keys.html
@@ -795,7 +978,39 @@ public:
         return points;
     }
 
-    struct SnakeSegment {
+    // Sample the water surface height at a world-space position, as in the water shader
+    float sampleWaterHeightWorld(const glm::vec3 &worldPos) const
+    {
+        // Transform world position into water model space
+        glm::vec4 inv = glm::inverse(m_waterModelMatrix) * glm::vec4(worldPos, 1.0f);
+        glm::vec3 modelPos = glm::vec3(inv);
+
+        // Same sines logic as in the water shader
+        float height = 0.0f;
+        float angle = 0.1f;
+        float alpha_current = m_amplitude;
+        float omega_current = m_omega;
+        const float PI = 3.14159265359f;
+        float time = (float)glfwGetTime();
+
+        for (int i = 0; i < glm::min(m_numWaves, 10); ++i)
+        {
+            glm::vec2 dir = glm::vec2(cos(angle), sin(angle));
+            height += alpha_current * sin(glm::dot(dir, glm::vec2(modelPos.x, modelPos.z)) * omega_current + time * m_phi);
+
+            angle += 0.73f * PI;
+            alpha_current *= 0.75f;
+            omega_current *= 1.5f;
+        }
+
+        // Add height to model y. Normally the y-coordinate should be the y of the plane + height, but our plane is at y=0
+        glm::vec4 displacedModelPos = glm::vec4(modelPos.x, height, modelPos.z, 1.0f);
+        glm::vec4 displacedWorld = m_waterModelMatrix * displacedModelPos;
+        return displacedWorld.y;
+    }
+
+    struct SnakeSegment
+    {
         glm::vec3 localPosition;
         glm::mat4 localRotation = glm::mat4(1.0f);
         std::unique_ptr<SnakeSegment> child = nullptr;
@@ -869,11 +1084,18 @@ public:
         // evaluate next position on the bezier curve
         glm::vec3 newPos = m_snakePath[m_snakeCurve].evaluate(m_snakeT);
 
+        // Clamp the snake's y to the water surface
+        float sampledY = sampleWaterHeightWorld(newPos);
+        newPos.y = sampledY;
 
         // This block is for the direction of the snake
         float nextT = m_snakeT + 0.01f;
         if (nextT > 1.0f) nextT = 1.0f;
         glm::vec3 nextPos = m_snakePath[m_snakeCurve].evaluate(nextT);
+
+        // Also clamp next position to the water surface
+        float sampledNextY = sampleWaterHeightWorld(nextPos);
+        nextPos.y = sampledNextY;
         glm::vec3 direction = glm::normalize(newPos - nextPos);
 
         // Build rotation so the snake faces along the path
@@ -902,6 +1124,22 @@ private:
     Shader m_skyboxShader;
     Shader m_lineShader;
 
+    // Water shader and single plane mesh
+    Shader m_waterShader;
+    std::optional<GPUMesh> m_planeMesh;
+    // Ground mesh (large plane) to form the scene floor
+    std::optional<GPUMesh> m_groundMesh;
+    glm::mat4 m_groundModelMatrix{1.0f};
+    glm::mat4 m_waterModelMatrix{1.0f};
+    // Sum-of-sines water parameters
+    static constexpr int MAX_WAVES = 16;
+    int m_numWaves{10};
+    float m_omega{3.0f};
+    float m_phi{1.0f};
+    float m_amplitude{0.008f};
+    // Water reflection tunables (exposed to ImGui)
+    float m_reflectionStrength{0.9f};
+    glm::vec3 m_F0{0.02f};
     bool m_usePBR{true};
 
 	bool m_useEnvironmentMapping { false };
