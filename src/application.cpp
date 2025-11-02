@@ -205,7 +205,7 @@ public:
 
         // Configure ground and water model matrices
         m_groundModelMatrix = glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -5.0f, 0.0f)), glm::vec3(10.0f));
-        m_waterModelMatrix = glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.0f)), glm::vec3(10.0f));
+        m_waterModelMatrix = glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.0f)), glm::vec3(7.0f));
 
         // Initialize simple material params (these will be uploaded as uniforms)
         m_kd = glm::vec3(0.5f);
