@@ -150,11 +150,10 @@ std::vector<Mesh> loadMesh(const std::filesystem::path& file, const LoadMeshSett
     // Compute per-vertex tangents for each mesh (if texcoords are present)
     // Based on https://learnopengl.com/Advanced-Lighting/Normal-Mapping
     for (auto& mesh : out) {
-        // Initialize tangents
-        for (auto& v : mesh.vertices)
-            v.tangent = glm::vec4(0.0f);
+        std::vector<glm::vec3> tan1(mesh.vertices.size(), glm::vec3(0.0f));
+        std::vector<glm::vec3> tan2(mesh.vertices.size(), glm::vec3(0.0f));
 
-        // Accumulate per-triangle tangents
+        // Accumulate per-triangle tangents and bitangents
         for (const auto& tri : mesh.triangles) {
             const Vertex& v0 = mesh.vertices[tri.x];
             const Vertex& v1 = mesh.vertices[tri.y];
@@ -177,24 +176,40 @@ std::vector<Mesh> loadMesh(const std::filesystem::path& file, const LoadMeshSett
             float r = (fabs(f) < 1e-9f) ? 0.0f : 1.0f / f;
 
             glm::vec3 tangent = r * (edge1 * deltaUV2.y - edge2 * deltaUV1.y);
+            glm::vec3 bitangent = r * (-edge1 * deltaUV2.x + edge2 * deltaUV1.x);
 
-            mesh.vertices[tri.x].tangent += glm::vec4(tangent, 0.0f);
-            mesh.vertices[tri.y].tangent += glm::vec4(tangent, 0.0f);
-            mesh.vertices[tri.z].tangent += glm::vec4(tangent, 0.0f);
+            tan1[tri.x] += tangent;
+            tan1[tri.y] += tangent;
+            tan1[tri.z] += tangent;
+
+            tan2[tri.x] += bitangent;
+            tan2[tri.y] += bitangent;
+            tan2[tri.z] += bitangent;
         }
 
-        // Orthonormalize per-vertex tangents and compute handedness
-        for (auto& v : mesh.vertices) {
+        // Orthonormalize per-vertex tangents and compute handedness using accumulated bitangent
+        for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+            auto& v = mesh.vertices[i];
             glm::vec3 n = v.normal;
-            glm::vec3 t = glm::vec3(v.tangent);
+            glm::vec3 t = tan1[i];
+            glm::vec3 b = tan2[i];
+
             if (glm::length(t) < 1e-12f) {
                 // fallback tangent
                 t = glm::normalize(glm::cross(n, glm::vec3(0.0f, 0.0f, 1.0f)));
             } else {
                 t = glm::normalize(t - n * glm::dot(n, t));
             }
-            glm::vec3 b = glm::cross(n, t);
-            float w = (glm::dot(b, glm::vec3(v.tangent)) < 0.0f) ? -1.0f : 1.0f;
+
+            if (glm::length(b) < 1e-12f) {
+                // fallback bitangent
+                b = glm::cross(n, t);
+            } else {
+                b = glm::normalize(b - n * glm::dot(n, b));
+            }
+
+            // Compute handedness from the accumulated bitangent
+            float w = (glm::dot(glm::cross(n, t), b) < 0.0f) ? -1.0f : 1.0f;
             v.tangent = glm::vec4(t, w);
         }
     }
