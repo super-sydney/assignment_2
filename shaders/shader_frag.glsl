@@ -55,15 +55,37 @@ void main()
     vec3 B = normalize(cross(N, T)) * fragTangent.w;
     mat3 TBN = mat3(T, B, N);
 
-    // Basic parallax mapping
-    vec2 uv = fragTexCoord;
+    // Parallax occlusion mapping
+    vec3 viewDir = normalize(cameraPosition - fragPosition);
+    vec2 uv = fragTexCoord * vec2(40.0, 40.0);
     if (hasHeightMap) {
-        float height = texture(heightMap, uv).r;
+        float numLayers = mix(8, 64, max(dot(vec3(0.0, 0.0, 1.0), viewDir), 0.0));
+        float layerDepth = 1.0 / numLayers;
+        float currentLayerDepth = 0.0;
+        vec2 P = viewDir.xy * heightScale;
+        vec2 deltaUV = P / numLayers;
 
-        vec3 viewDir = normalize(cameraPosition - fragPosition);
-        vec3 viewDirT = normalize(TBN * viewDir);
-        vec2 p = viewDirT.xy / viewDirT.z * (height * heightScale);
-        uv -= p;
+        float currentUV = texture(heightMap, uv).r;
+
+        while(currentLayerDepth < currentUV)
+        {
+            // shift texture coordinates along P
+            uv -= deltaUV;
+            currentUV = texture(heightMap, uv).r;
+            // get depth of next layer
+            currentLayerDepth += layerDepth;
+        }
+
+        // get texture coordinates before collision (reverse operations)
+        vec2 prevUV = uv + deltaUV;
+
+        // get depth after and before collision for linear interpolation
+        float afterDepth  = currentUV - currentLayerDepth;
+        float beforeDepth = texture(heightMap, prevUV).r - currentLayerDepth + layerDepth;
+
+        // interpolation of texture coordinates
+        float weight = afterDepth / (afterDepth - beforeDepth);
+        uv = mix(prevUV, uv, weight);
     }
 
     // Determine diffuse color, either kd or sampled texture
