@@ -597,6 +597,7 @@ public:
 
             ImGui::Separator();
             ImGui::Checkbox("Use Environment Map", &m_useEnvironmentMapping);
+            ImGui::Checkbox("Use Snake Camera", &m_useSnakeCamera);
 
             if (ImGui::CollapsingHeader("Snake"))
             {
@@ -632,13 +633,25 @@ public:
             // ...
             glEnable(GL_DEPTH_TEST);
 
+            // Compute active view matrix
+            glm::mat4 activeView = m_camera.getViewMatrix();
+            glm::vec3 activeCameraPos = m_camera.getPosition();
+            if (m_useSnakeCamera)
+            {
+                glm::vec3 forward = glm::normalize(glm::vec3(-1.0f) * glm::vec3(m_snakeRotation[2]));
+                glm::vec3 up = glm::normalize(glm::vec3(m_snakeRotation[1]));
+                // Position the camera slightly above and at the front of the snake
+                glm::vec3 eye = m_snakePosition + forward * 0.5f + up * 0.15f;
+                activeView = glm::lookAt(eye, eye + forward, up);
+                activeCameraPos = eye;
+            }
 
             // Draw Skybox
             glDepthFunc(GL_LEQUAL);
             m_skyboxShader.bind();
 
             // Remove translation from view matrix
-            glm::mat4 viewNoTranslate = glm::mat4(glm::mat3(m_camera.getViewMatrix()));
+            glm::mat4 viewNoTranslate = glm::mat4(glm::mat3(activeView));
             glUniformMatrix4fv(m_skyboxShader.getUniformLocation("view"), 1, GL_FALSE, glm::value_ptr(viewNoTranslate));
             glUniformMatrix4fv(m_skyboxShader.getUniformLocation("projection"), 1, GL_FALSE, glm::value_ptr(m_projectionMatrix));
 
@@ -649,9 +662,8 @@ public:
             glBindVertexArray(0);
             glDepthFunc(GL_LESS); // reset to default
 
-            // Update view matrix from camera
-            m_viewMatrix = m_camera.getViewMatrix();
-
+            // Update view matrix from the active view we computed earlier
+            m_viewMatrix = activeView;
 
             if (m_showPath) {
                 renderBezierPath();
@@ -698,7 +710,7 @@ public:
                 }
 
                 // Upload camera and material uniforms
-                glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+                glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(activeCameraPos));
 
                 GPUMaterial gmat;
                 gmat.kd = m_kd;
@@ -775,8 +787,7 @@ public:
                     glUniform1i(activeShader.getUniformLocation("useMaterial"), m_useMaterial);
                 }
                 // Upload camera and material uniforms
-                glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
-
+                glUniform3fv(activeShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(activeCameraPos));
 
                 // Update material UBO for this mesh (std140 block 'Material')
                 GPUMaterial mat;
@@ -893,7 +904,7 @@ public:
                 glUniformMatrix3fv(m_waterShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalWater));
                 // Provide model matrix so vertex shader can compute world-space fragPosition
                 glUniformMatrix4fv(m_waterShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(waterModel));
-                glUniform3fv(m_waterShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(m_camera.getPosition()));
+                glUniform3fv(m_waterShader.getUniformLocation("cameraPosition"), 1, glm::value_ptr(activeCameraPos));
                 glUniform1f(m_waterShader.getUniformLocation("time"), (float)glfwGetTime());
 
                 // Upload light uniforms
@@ -1231,6 +1242,8 @@ private:
     bool m_useNormalMap{false};
     std::unique_ptr<Texture> m_roughnessMap;
     bool m_useRoughnessMap{false};
+    std::unique_ptr<Texture> m_metallicMap;
+    bool m_useMetallicMap{false};
     std::unique_ptr<Texture> m_aoMap;
     bool m_useAOMap{false};
     std::unique_ptr<Texture> m_heightMap;
@@ -1245,6 +1258,7 @@ private:
     Camera m_camera;
     bool m_mouseCaptured{false};
     glm::vec2 m_lastMousePos{0.0f};
+    bool m_useSnakeCamera{false};
 };
 
 int main()
