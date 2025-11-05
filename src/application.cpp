@@ -42,6 +42,7 @@ public:
             m_useTexture = true;
             m_useNormalMap = false;
             m_useRoughnessMap = false;
+            m_useMetallicMap = false;
             m_useAOMap = false;
             m_useHeightMap = false;
         }
@@ -532,6 +533,25 @@ public:
                 }
 
                 ImGui::Separator();
+                ImGui::Checkbox("Use Metallic Map", &m_useMetallicMap);
+                ImGui::SameLine();
+                if (ImGui::Button("Choose Metallic Map..."))
+                {
+                    if (auto path = pickOpenFile("png,jpg"))
+                    {
+                        try
+                        {
+                            m_metallicMap = std::make_unique<Texture>(path->string());
+                            m_useMetallicMap = true;
+                        }
+                        catch (...)
+                        {
+                            std::cerr << "Failed to load metallic map" << std::endl;
+                        }
+                    }
+                }
+
+                ImGui::Separator();
                 ImGui::Checkbox("Use AO Map", &m_useAOMap);
                 ImGui::SameLine();
                 if (ImGui::Button("Choose AO Map..."))
@@ -831,14 +851,26 @@ public:
                     glUniform1f(locHeightScale, m_heightScale);
 
                 // Upload PBR parameters
-                int locMetallic = activeShader.getUniformLocation("metallic");
+                int locMetallic = activeShader.getUniformLocation("metallicValue");
                 if (locMetallic >= 0)
                     glUniform1f(locMetallic, m_metallic);
                 int locRoughVal = activeShader.getUniformLocation("roughnessValue");
                 if (locRoughVal >= 0)
                     glUniform1f(locRoughVal, m_roughness);
 
-				// Environment mapping on texture 5
+                // Metallic map in texture 6
+                int locHasMetal = activeShader.getUniformLocation("hasMetallicMap");
+                if (locHasMetal >= 0)
+                    glUniform1i(locHasMetal, (m_useMetallicMap && m_metallicMap) ? GL_TRUE : GL_FALSE);
+                if (m_useMetallicMap && m_metallicMap)
+                {
+                    m_metallicMap->bind(GL_TEXTURE6);
+                    int locM = activeShader.getUniformLocation("metallicMap");
+                    if (locM >= 0)
+                        glUniform1i(locM, 6);
+                }
+
+                // Environment mapping on texture 5
                 glUniform1i(activeShader.getUniformLocation("useEnvironmentMap"), m_useEnvironmentMapping ? GL_TRUE : GL_FALSE);
                 glActiveTexture(GL_TEXTURE5);
                 glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);

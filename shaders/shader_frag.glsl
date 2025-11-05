@@ -19,6 +19,8 @@ uniform sampler2D normalMap;
 uniform bool hasNormalMap;
 uniform sampler2D roughnessMap;
 uniform bool hasRoughnessMap;
+uniform sampler2D metallicMap;
+uniform bool hasMetallicMap;
 uniform sampler2D aoMap;
 uniform bool hasAOMap;
 uniform sampler2D heightMap;
@@ -29,7 +31,7 @@ uniform vec3 cameraPosition;
 uniform vec3 lightPosition;
 uniform vec3 lightColor;
 uniform float ka;
-uniform float metallic;
+uniform float metallicValue;
 uniform float roughnessValue;
 
 in vec3 fragPosition;
@@ -57,6 +59,7 @@ void main()
 
     // Parallax occlusion mapping
     vec3 viewDir = normalize(cameraPosition - fragPosition);
+    vec3 viewDirTangent = TBN * viewDir;
     vec2 uv = fragTexCoord * vec2(40.0, 40.0);
     if (hasHeightMap) {
         float numLayers = mix(8, 64, max(dot(vec3(0.0, 0.0, 1.0), viewDir), 0.0));
@@ -117,6 +120,11 @@ void main()
         float rough = roughnessValue;
         if (hasRoughnessMap) {
             rough = texture(roughnessMap, uv).r;
+        }
+
+        float metallic = metallicValue;
+        if (hasMetallicMap) {
+            metallic = texture(metallicMap, uv).r;
         }
 
         float alpha = rough * rough;

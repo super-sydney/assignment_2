@@ -39,7 +39,7 @@ void main()
 	float NdotL = max(dot(N, L), 0.0);
 	float NdotH = max(dot(N, H), 0.0);
 	vec3 diffuse = kd * NdotL * lightColor;
-	vec3 spec = ks * pow(NdotH, shininess) * lightColor;
+	vec3 spec = ks * pow(NdotH, 100) * lightColor;
 	vec3 ambient = ka * lightColor;
 
 	vec3 color = ambient + diffuse + spec;
