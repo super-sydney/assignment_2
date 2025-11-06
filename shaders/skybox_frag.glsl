@@ -2,7 +2,14 @@
 in vec3 TexCoords;
 out vec4 FragColor;
 uniform samplerCube skybox;
+uniform float daylight;
+
 void main()
 {
-    FragColor = texture(skybox, TexCoords);
+    vec3 color = texture(skybox, TexCoords).rgb;
+
+    // Fade to night by darkening
+    color *= daylight;
+
+    FragColor = vec4(color, 1.0);
 }

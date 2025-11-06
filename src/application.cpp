@@ -101,6 +101,22 @@ public:
         glBindVertexArray(0);
 
 
+        // particle vao and vbo initialisation
+        glGenVertexArrays(1, &m_particleVAO);
+        glGenBuffers(1, &m_particleVBO);
+        glBindVertexArray(m_particleVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_particleVBO);
+
+        // position
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(GLfloat), (void*)0);
+
+        // color
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 7 * sizeof(GLfloat), (void*)(3 * sizeof(GLfloat)));
+        m_particles.resize(m_maxParticles);
+
+
         std::vector<std::string> faces = {
             std::string(RESOURCE_ROOT) + "resources/cubemap/px.png",
             std::string(RESOURCE_ROOT) + "resources/cubemap/nx.png",
@@ -132,6 +148,11 @@ public:
             lineBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/line_frag.glsl");
             m_lineShader = lineBuilder.build();
 
+
+            ShaderBuilder particleBuilder;
+            particleBuilder.addStage(GL_VERTEX_SHADER, RESOURCE_ROOT "shaders/particle_vert.glsl");
+            particleBuilder.addStage(GL_FRAGMENT_SHADER, RESOURCE_ROOT "shaders/particle_frag.glsl");
+            m_particleShader = particleBuilder.build();
 
             // Any new shaders can be added below in similar fashion.
             // ==> Don't forget to reconfigure CMake when you do!
@@ -613,6 +634,17 @@ public:
                 ImGui::SliderFloat("Wave Amplitude (deg)", &m_snakeWaveAmplitude, 0.0f, glm::radians(90.0f));
                 ImGui::SliderFloat("Wavelength", &m_snakeWavelength, 0.1f, 2.0f);
                 ImGui::Checkbox("Pause Snake", &m_snakePaused);
+                ImGui::Checkbox("Move at constant speed", &m_moveAtConstantSpeed);
+                if (m_moveAtConstantSpeed)
+                {
+                    ImGui::SliderFloat("Snake constant movement speed", &m_snakeSpeed, 0.0f, 10.0f);
+                    m_snakeClampedToWaterheight = false;
+                }
+                else {
+                    ImGui::Checkbox("Clamp snake y to waterheight", &m_snakeClampedToWaterheight);
+                }
+                 
+
             }
 
             ImGui::Separator();
@@ -623,6 +655,10 @@ public:
                 ImGui::SliderFloat("Phi", &m_phi, 0.0f, 10.0f);
                 ImGui::SliderFloat("Amplitude", &m_amplitude, 0.001f, 0.01f);
             }
+
+            ImGui::Separator();
+            ImGui::Checkbox("Draw mesh at light positions", &m_drawMeshAtLights);
+            ImGui::SliderFloat("Day/Night cycle speed", &m_dayNightSpeed, 0.0f, 0.5f);
 
             ImGui::End();
 
@@ -646,6 +682,8 @@ public:
                 activeCameraPos = eye;
             }
 
+            float daylight = updateDayAndNightCycle(deltaTime);
+
             // Draw Skybox
             glDepthFunc(GL_LEQUAL);
             m_skyboxShader.bind();
@@ -654,6 +692,7 @@ public:
             glm::mat4 viewNoTranslate = glm::mat4(glm::mat3(activeView));
             glUniformMatrix4fv(m_skyboxShader.getUniformLocation("view"), 1, GL_FALSE, glm::value_ptr(viewNoTranslate));
             glUniformMatrix4fv(m_skyboxShader.getUniformLocation("projection"), 1, GL_FALSE, glm::value_ptr(m_projectionMatrix));
+            glUniform1f(m_skyboxShader.getUniformLocation("daylight"), daylight); // for making the skybox dark at night as well
 
             glBindVertexArray(m_skyboxVAO);
             glActiveTexture(GL_TEXTURE0);
@@ -672,6 +711,9 @@ public:
             updateSnakeMotion(deltaTime);
             updateSnake(deltaTime);
             drawSnake();
+
+            updateParticles(deltaTime);
+
             // Draw ground plane
             if (m_groundMesh.has_value())
             {
@@ -683,6 +725,7 @@ public:
                 glUniformMatrix4fv(activeShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(m_groundModelMatrix));
                 glm::mat3 normalGround = glm::inverseTranspose(glm::mat3(m_groundModelMatrix));
                 glUniformMatrix3fv(activeShader.getUniformLocation("normalModelMatrix"), 1, GL_FALSE, glm::value_ptr(normalGround));
+                glUniform1f(activeShader.getUniformLocation("daylight"), daylight);
 
                 if (m_groundMesh->hasTextureCoords())
                 {
@@ -935,10 +978,16 @@ public:
                 m_planeMesh->draw(m_waterShader);
             }
 
+            if (m_drawMeshAtLights) {
+                drawMeshAtLights();
+            }
+
             // Processes input and swaps the window buffer
             m_window.swapBuffers();
         }
     }
+
+    
 
     // In here you can handle key presses
     // key - Integer that corresponds to numbers in https://www.glfw.org/docs/latest/group__keys.html
@@ -978,6 +1027,109 @@ public:
         std::cout << "Released mouse button: " << button << std::endl;
     }
 
+    void updateParticles(float deltaTime)
+    {
+        auto emitParticle = [&](const glm::vec3& pos) {
+            // find particles which are dead so we can reuse them 
+            size_t i = m_lastUsedParticle;
+            for (size_t j = 0; j < m_maxParticles; ++j) {
+                i = (i + j) % m_maxParticles;
+                if (m_particles[i].life <= 0.0f) {
+                    m_lastUsedParticle = i;
+                    break;
+                }
+            }
+
+            Particle& p = m_particles[i];
+            p.position = pos;
+            p.velocity = glm::vec3(
+                ((rand() % 100) / 50.0f - 1.0f) * 0.5f,
+                ((rand() % 100) / 100.0f) * 1.0f,
+                ((rand() % 100) / 50.0f - 1.0f) * 0.5f
+            );
+            p.color = glm::vec4(0.5f, 0.7f, 1.0f, 0.8f); // light blue, semi-transparent
+            p.life = 1.0f;
+        };
+
+        emitParticle(m_snakePosition);
+
+        for (auto& p : m_particles) {
+            if (p.life > 0.0f) {
+                p.life -= deltaTime;
+                p.position += p.velocity * deltaTime;
+                p.velocity.y -= 9.81f * 0.1f * deltaTime; // gravity
+                p.color.a = glm::max(0.0f, p.life);
+            }
+        }
+
+        // data for the vbo
+        std::vector<GLfloat> particleData;
+        for (const auto& p : m_particles) {
+            if (p.life > 0.0f) {
+                particleData.push_back(p.position.x);
+                particleData.push_back(p.position.y);
+                particleData.push_back(p.position.z);
+                particleData.push_back(p.color.r);
+                particleData.push_back(p.color.g);
+                particleData.push_back(p.color.b);
+                particleData.push_back(p.color.a);
+            }
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, m_particleVBO);
+        glBufferData(GL_ARRAY_BUFFER, particleData.size() * sizeof(GLfloat), particleData.data(), GL_DYNAMIC_DRAW);
+
+        glEnable(GL_PROGRAM_POINT_SIZE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        m_particleShader.bind();
+        glUniformMatrix4fv(m_particleShader.getUniformLocation("view"), 1, GL_FALSE, glm::value_ptr(m_viewMatrix));
+        glUniformMatrix4fv(m_particleShader.getUniformLocation("projection"), 1, GL_FALSE, glm::value_ptr(m_projectionMatrix));
+        glUniform1f(m_particleShader.getUniformLocation("pointSize"), 15.0f);
+
+        glBindVertexArray(m_particleVAO);
+        glDrawArrays(GL_POINTS, 0, (GLsizei)(particleData.size() / 7));
+        glBindVertexArray(0);
+
+    }
+    void drawMeshAtLights() {
+        // draw a mesh at the position of lights, nice for visualisng the day night cycle
+        for (auto& light : m_lights)
+        {
+            m_basicShader.bind();
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), light.position) * glm::scale(glm::mat4(1.0f), glm::vec3(0.2f));
+
+            glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * model;
+            glUniformMatrix4fv(m_basicShader.getUniformLocation("mvpMatrix"), 1, GL_FALSE, glm::value_ptr(mvp));
+            glUniformMatrix4fv(m_basicShader.getUniformLocation("modelMatrix"), 1, GL_FALSE, glm::value_ptr(model));
+
+            m_meshes[0].draw(m_basicShader); // use dragon mesh for now
+        }
+    }
+
+    float updateDayAndNightCycle(float deltaTime) {
+        static float timeOfDay = 0.0f;
+        timeOfDay += deltaTime * m_dayNightSpeed;  // speed of day/night cycle
+        float sunAngle = timeOfDay * glm::two_pi<float>(); 
+
+        // Light 0 will be the sun which moves in a circle.
+        m_lights[0].position = glm::vec3(cos(sunAngle) * 10.0f, sin(sunAngle) * 10.0f, 0.0f);
+
+        // Light gets dimmer at night
+        float daylight = glm::clamp(sin(sunAngle) * 0.5f + 0.5f, 0.05f, 1.0f);
+        m_lights[0].color = glm::vec3(daylight);
+        return daylight;
+    }
+
+    struct Particle {
+        glm::vec3 position;
+        glm::vec3 velocity;
+        glm::vec4 color; 
+        float life;     
+    };
+
+
     struct CubicBezier {
         glm::vec3 p0, p1, p2, p3;
 
@@ -985,13 +1137,23 @@ public:
             float u = 1.0f - t;
             return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
         }
+
+        glm::vec3 derivative(float t) const {
+            float u = 1.0f - t;
+            return
+                -3.0f * u * u * p0 +
+                3.0f * u * u * p1 - 6.0f * u * t * p1 +
+                6.0f * u * t * p2 - 3.0f * t * t * p2 +
+                3.0f * t * t * p3;
+        }
+
     };
 
     void initSnakePath() {
         m_snakePath = {
-            { {0,1,3}, {1,2,3}, {2,2,3}, {3,1,3} }, // curve 1
-            { {3,1,3}, {4,0,2}, {2,-1,1}, {0,0,0} }, // curve 2
-            { {0,0,0}, {-1,1,1}, {-2,2,2}, {0,1,3} } // curve 3
+            { {-1,0,2}, {0,1,2}, {1,1,2}, {2,0,2} }, // curve 1
+            { {2,0,2}, {3,-1,1}, {2,-1,0}, {-1,-1,-1} }, // curve 2
+            { {-1,-1,-1}, {-2,0,0}, {-3,1,1}, {-1,0,2} } // curve 3
         };
     }
 
@@ -1118,7 +1280,16 @@ public:
     void updateSnakeMotion(float deltaTime) {
         if (m_snakePath.empty()) return;
 
-        m_snakeT += m_snakeSpeed * deltaTime;
+        if (m_moveAtConstantSpeed) {
+            auto& curve = m_snakePath[m_snakeCurve];
+            float dLenDt = glm::length(curve.derivative(m_snakeT));
+            m_snakeT += (m_snakeSpeed / dLenDt) * deltaTime;
+
+        }
+        else { // else move at constant t
+            m_snakeT += 0.2f * deltaTime;
+        }
+
         if (m_snakeT > 1.0f) {
             m_snakeT = 0.0f;
             m_snakeCurve = (m_snakeCurve + 1) % m_snakePath.size();
@@ -1127,18 +1298,22 @@ public:
         // evaluate next position on the bezier curve
         glm::vec3 newPos = m_snakePath[m_snakeCurve].evaluate(m_snakeT);
 
-        // Clamp the snake's y to the water surface
-        float sampledY = sampleWaterHeightWorld(newPos);
-        newPos.y = sampledY;
+        if (m_snakeClampedToWaterheight) {
+            // Clamp the snake's y to the water surface
+            float sampledY = sampleWaterHeightWorld(newPos);
+            newPos.y = sampledY;
+        }
 
         // This block is for the direction of the snake
         float nextT = m_snakeT + 0.01f;
         if (nextT > 1.0f) nextT = 1.0f;
         glm::vec3 nextPos = m_snakePath[m_snakeCurve].evaluate(nextT);
 
-        // Also clamp next position to the water surface
-        float sampledNextY = sampleWaterHeightWorld(nextPos);
-        nextPos.y = sampledNextY;
+        if (m_snakeClampedToWaterheight) {
+            // Also clamp next position to the water surface
+            float sampledNextY = sampleWaterHeightWorld(nextPos);
+            nextPos.y = sampledNextY;
+        }
         glm::vec3 direction = glm::normalize(newPos - nextPos);
 
         // Build rotation so the snake faces along the path
@@ -1166,6 +1341,13 @@ private:
     Shader m_basicShader;
     Shader m_skyboxShader;
     Shader m_lineShader;
+    Shader m_particleShader;
+
+    std::vector<Particle> m_particles;
+    size_t m_maxParticles = 500;
+    size_t m_lastUsedParticle = 0;
+    GLuint m_particleVAO = 0;
+    GLuint m_particleVBO = 0;
 
     // Water shader and single plane mesh
     Shader m_waterShader;
@@ -1207,13 +1389,18 @@ private:
     glm::vec3 m_snakePosition = glm::vec3(0.0f);
     glm::mat4 m_snakeRotation = glm::mat4(1.0f);
     float m_snakeT = 0.0f;
-    float m_snakeSpeed = 0.2f; 
+    float m_snakeSpeed = 1.0f; 
     size_t m_snakeCurve = 2;
 
     float m_snakeWaveSpeed = 3.0f;
     float m_snakeWaveAmplitude = glm::radians(20.0f); // in radians
     float m_snakeWavelength = 0.6f;
     bool m_snakePaused = false;
+    bool m_snakeClampedToWaterheight = false;
+    bool m_moveAtConstantSpeed = true;
+
+    float m_dayNightSpeed = 0.05f;
+    bool m_drawMeshAtLights = true;
 
     std::vector<GPUMesh> m_meshes;
     std::unique_ptr<Texture> m_texture;

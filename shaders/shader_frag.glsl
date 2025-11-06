@@ -10,6 +10,7 @@ layout(std140) uniform Material // Must match the GPUMaterial defined in src/mes
 
 uniform samplerCube environmentMap;   
 uniform bool useEnvironmentMap;  
+uniform float daylight;
 
 uniform sampler2D colorMap;
 uniform bool hasTexCoords;
@@ -167,7 +168,8 @@ void main()
         if (useEnvironmentMap) {
             vec3 I = normalize(fragPosition - cameraPosition);
             vec3 R = reflect(I, Nsample);                     
-            vec3 envColor = texture(environmentMap, R).rgb;   
+            vec3 envColor = texture(environmentMap, R).rgb;  
+            envColor *= daylight;
             float reflectionStrength = 0.2;                   
             color = mix(color, envColor, reflectionStrength);
         }
